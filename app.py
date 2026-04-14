@@ -86,6 +86,9 @@ class ArtPipeAPI(BaseHTTPRequestHandler):
         else:
             self.send_error(404, "Not Found")
 
+    def do_HEAD(self):
+        self.do_GET()
+
     def do_OPTIONS(self):
         self.send_response(200)
         self._set_cors()
