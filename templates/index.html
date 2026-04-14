@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ArtPipe - AI 2D Game Character Generator</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="logo">
+            <span class="logo-icon">🎨</span>
+            <span class="logo-text">ArtPipe</span>
+            <span class="badge">MVP</span>
+        </div>
+        <div class="nav-links">
+            <a href="#" onclick="showStep(0)" class="active" id="nav-create">Create</a>
+            <a href="#" onclick="showStep(5)" id="nav-gallery">Gallery</a>
+            <a href="#" onclick="showStep(6)" id="nav-export">Export</a>
+        </div>
+    </nav>
+
+    <main class="container">
+        <!-- Step 0: Welcome / Describe -->
+        <section id="step-0" class="step active">
+            <div class="hero">
+                <h1>描述你的角色，30秒获得引擎就绪的2D资产包</h1>
+                <p class="subtitle">AI驱动的独立游戏角色美术管线 · 从文字到Spine动画到Unity包</p>
+            </div>
+            <div class="card form-card">
+                <h2>🎯 Step 1: 描述你的角色</h2>
+                <div class="form-group">
+                    <label>角色描述</label>
+                    <textarea id="char-desc" rows="3" placeholder="例: 一个穿红色斗篷的精灵猎人，手持弓箭，绿色眼睛，日式RPG风格"></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>美术风格</label>
+                        <select id="art-style">
+                            <option value="pixel">🎮 像素风 (Pixel Art)</option>
+                            <option value="cartoon">🎨 卡通手绘 (Cartoon)</option>
+                            <option value="anime">🌸 日式RPG (Anime)</option>
+                            <option value="western">🤠 欧美卡通 (Western)</option>
+                            <option value="dark">🗡️ 暗黑风 (Dark Fantasy)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>角色类型</label>
+                        <select id="char-type">
+                            <option value="warrior">⚔️ 战士</option>
+                            <option value="mage">🧙 法师</option>
+                            <option value="archer">🏹 弓箭手</option>
+                            <option value="rogue">🗡️ 盗贼</option>
+                            <option value="healer">💚 治疗者</option>
+                            <option value="monster">👾 怪物</option>
+                            <option value="npc">👤 NPC</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>主色调</label>
+                        <input type="color" id="primary-color" value="#e74c3c">
+                    </div>
+                </div>
+                <button class="btn btn-primary btn-lg" onclick="generateCharacter()">
+                    🚀 生成角色
+                </button>
+            </div>
+        </section>
+
+        <!-- Step 1: Loading -->
+        <section id="step-1" class="step">
+            <div class="loading-container">
+                <div class="loading-ring"></div>
+                <h2 id="loading-text">🎨 正在生成角色概念图...</h2>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <div class="pipeline-steps">
+                    <div class="pipe-step" id="ps-gen">✅ 概念图生成</div>
+                    <div class="pipe-step" id="ps-split">⏳ 图层拆分</div>
+                    <div class="pipe-step" id="ps-rig">⏳ 骨骼绑定</div>
+                    <div class="pipe-step" id="ps-anim">⏳ 动画制作</div>
+                    <div class="pipe-step" id="ps-pack">⏳ 打包导出</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 2: Preview & Edit -->
+        <section id="step-2" class="step">
+            <div class="preview-layout">
+                <div class="canvas-area">
+                    <h2>👤 角色预览</h2>
+                    <div class="canvas-wrapper">
+                        <canvas id="character-canvas" width="400" height="500"></canvas>
+                    </div>
+                    <div class="anim-controls">
+                        <button class="btn btn-sm" onclick="playAnim('idle')" id="anim-idle">🧍 Idle</button>
+                        <button class="btn btn-sm" onclick="playAnim('walk')" id="anim-walk">🚶 Walk</button>
+                        <button class="btn btn-sm" onclick="playAnim('run')" id="anim-run">🏃 Run</button>
+                        <button class="btn btn-sm" onclick="playAnim('attack')" id="anim-attack">⚔️ Attack</button>
+                        <button class="btn btn-sm" onclick="playAnim('hurt')" id="anim-hurt">💥 Hurt</button>
+                        <button class="btn btn-sm" onclick="playAnim('die')" id="anim-die">💀 Die</button>
+                    </div>
+                </div>
+                <div class="props-area">
+                    <h2>⚙️ 属性调整</h2>
+                    <div class="prop-group">
+                        <label>动画速度</label>
+                        <input type="range" id="anim-speed" min="0.5" max="3" step="0.1" value="1" oninput="setAnimSpeed(this.value)">
+                        <span id="speed-val">1.0x</span>
+                    </div>
+                    <div class="prop-group">
+                        <label>角色缩放</label>
+                        <input type="range" id="char-scale" min="0.5" max="2" step="0.1" value="1" oninput="setScale(this.value)">
+                        <span id="scale-val">1.0x</span>
+                    </div>
+                    <div class="prop-group">
+                        <label>配色方案</label>
+                        <div class="color-swatches" id="color-swatches"></div>
+                    </div>
+                    <div class="prop-group">
+                        <label>角色变体</label>
+                        <div class="variant-grid" id="variant-grid"></div>
+                    </div>
+                    <div class="character-info" id="char-info">
+                        <div class="info-row"><span>风格:</span><span id="info-style">-</span></div>
+                        <div class="info-row"><span>类型:</span><span id="info-type">-</span></div>
+                        <div class="info-row"><span>部件数:</span><span id="info-parts">-</span></div>
+                        <div class="info-row"><span>骨骼数:</span><span id="info-bones">-</span></div>
+                        <div class="info-row"><span>动画数:</span><span id="info-anims">6</span></div>
+                    </div>
+                    <button class="btn btn-primary" onclick="showStep(3)">下一步: 导出 →</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 3: Export -->
+        <section id="step-3" class="step">
+            <h2>📦 导出角色资产包</h2>
+            <div class="export-grid">
+                <div class="export-card" onclick="doExport('unity')">
+                    <div class="export-icon">🎮</div>
+                    <h3>Unity Package</h3>
+                    <p>含Prefab + Animator + Sprite Atlas</p>
+                    <span class="tag">.unitypackage</span>
+                </div>
+                <div class="export-card" onclick="doExport('spine')">
+                    <div class="export-icon">🦴</div>
+                    <h3>Spine Project</h3>
+                    <p>含骨骼 + 权重 + 动画数据</p>
+                    <span class="tag">.spine + .atlas</span>
+                </div>
+                <div class="export-card" onclick="doExport('spritesheet')">
+                    <div class="export-icon">🎞️</div>
+                    <h3>Sprite Sheet</h3>
+                    <p>帧动画序列图 + JSON数据</p>
+                    <span class="tag">.png + .json</span>
+                </div>
+                <div class="export-card" onclick="doExport('godot')">
+                    <div class="export-icon">🕊️</div>
+                    <h3>Godot Scene</h3>
+                    <p>含Scene + AnimationPlayer</p>
+                    <span class="tag">.tscn</span>
+                </div>
+            </div>
+            <div id="export-status" class="export-status"></div>
+            <div class="export-preview" id="export-preview" style="display:none">
+                <h3>📋 导出内容预览</h3>
+                <pre id="export-content"></pre>
+                <button class="btn btn-primary" onclick="downloadExport()">⬇️ 下载资产包</button>
+            </div>
+        </section>
+
+        <!-- Step 5: Gallery -->
+        <section id="step-5" class="step">
+            <h2>🖼️ 角色画廊</h2>
+            <div class="gallery-grid" id="gallery-grid">
+                <div class="gallery-empty">还没有生成角色，去<a href="#" onclick="showStep(0)">创建一个</a>吧！</div>
+            </div>
+        </section>
+
+        <!-- Step 6: Pipeline Info -->
+        <section id="step-6" class="step">
+            <h2>🔧 生产管线信息</h2>
+            <div class="pipeline-info">
+                <div class="pipe-info-card">
+                    <h3>当前管线</h3>
+                    <div class="pipeline-flow">
+                        <span class="pipe-node">文字描述</span>
+                        <span class="pipe-arrow">→</span>
+                        <span class="pipe-node">程序化生成</span>
+                        <span class="pipe-arrow">→</span>
+                        <span class="pipe-node">部件拆分</span>
+                        <span class="pipe-arrow">→</span>
+                        <span class="pipe-node">骨骼绑定</span>
+                        <span class="pipe-arrow">→</span>
+                        <span class="pipe-node">动画生成</span>
+                        <span class="pipe-arrow">→</span>
+                        <span class="pipe-node">引擎导出</span>
+                    </div>
+                </div>
+                <div class="pipe-info-card">
+                    <h3>🚀 MVP 功能范围</h3>
+                    <ul>
+                        <li>✅ 5种美术风格 (像素/卡通/日式/欧美/暗黑)</li>
+                        <li>✅ 7种角色类型 (战士/法师/弓箭手/盗贼/治疗/怪物/NPC)</li>
+                        <li>✅ 程序化角色生成 (无需GPU)</li>
+                        <li>✅ Canvas实时渲染 + 动画预览</li>
+                        <li>✅ 6套动画 (Idle/Walk/Run/Attack/Hurt/Die)</li>
+                        <li>✅ 4种导出格式 (Unity/Spine/SpriteSheet/Godot)</li>
+                        <li>✅ 配色方案切换</li>
+                        <li>✅ 角色变体生成</li>
+                    </ul>
+                </div>
+                <div class="pipe-info-card">
+                    <h3>🔮 路线图</h3>
+                    <ul>
+                        <li>⏳ AI图片生成集成 (SDXL API)</li>
+                        <li>⏳ SAM自动拆层</li>
+                        <li>⏳ Spine .skel真实导出</li>
+                        <li>⏳ 风格LoRA训练</li>
+                        <li>⏳ 3D角色生成</li>
+                        <li>⏳ 多人协作</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>ArtPipe MVP v0.1 · AI-Powered 2D Game Character Pipeline · <a href="https://github.com/kongshan001/art-pipe">GitHub</a></p>
+    </footer>
+
+    <script src="/static/js/character.js"></script>
+    <script src="/static/js/animator.js"></script>
+    <script src="/static/js/exporter.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
