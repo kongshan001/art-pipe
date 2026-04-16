@@ -16,7 +16,7 @@ from urllib.error import URLError, HTTPError
 BACKENDS = {
     "pollinations": {
         "name": "Pollinations.ai",
-        "url_template": "https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&seed={seed}&nologo=true&model=flux",
+        "url_template": "https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&seed={seed}&nologo=true&model=flux&negative={negative}",
         "timeout": 60,
         "free": True,
     },
@@ -41,11 +41,16 @@ class AIGenerator:
 
     # 游戏角色专用的提示词模板
     STYLE_PROMPTS = {
-        "pixel": "pixel art, retro game sprite, 16-bit style, clean pixels, no anti-aliasing",
-        "cartoon": "cartoon style, thick outlines, flat colors, cute proportions, game character",
-        "anime": "anime style, JRPG character, cel-shaded, vibrant colors, detailed",
-        "western": "western cartoon style, bold shapes, comic book style, game character",
-        "dark": "dark fantasy style, gothic, dramatic lighting, moody atmosphere, game character",
+        "pixel": "pixel art, retro game sprite, 16-bit style, clean pixels, no anti-aliasing, "
+                 "flat colors, crisp edges, perfectly aligned pixel grid",
+        "cartoon": "cartoon style, thick outlines, flat colors, cute proportions, game character, "
+                   "smooth cel-shading, vibrant palette",
+        "anime": "anime style, JRPG character, cel-shaded, vibrant colors, detailed, "
+                 "beautiful face, dynamic pose, high quality illustration",
+        "western": "western cartoon style, bold shapes, comic book style, game character, "
+                   "strong silhouette, clear read",
+        "dark": "dark fantasy style, gothic, dramatic lighting, moody atmosphere, game character, "
+                "high contrast, rich shadows, ominous aura",
     }
 
     POSE_PROMPTS = {
@@ -58,14 +63,40 @@ class AIGenerator:
     }
 
     TYPE_PROMPTS = {
-        "warrior": "warrior knight in heavy armor, sword and shield, battle-ready",
-        "mage": "wizard mage in flowing robes, holding magical staff, arcane symbols",
-        "archer": "archer hunter with bow and arrows, forest ranger, hooded cloak",
-        "rogue": "rogue assassin in dark leather, dual daggers, stealthy",
-        "healer": "healer cleric in white robes, holy book, divine aura",
-        "monster": "fantasy monster creature, fearsome, demonic, boss enemy",
-        "npc": "friendly NPC villager, simple clothes, approachable",
+        "warrior": "warrior knight in heavy armor, sword and shield, battle-ready, "
+                   "detailed armor plating, heroic stance",
+        "mage": "wizard mage in flowing robes, holding magical staff, arcane symbols, "
+                "glowing runes, mystical aura",
+        "archer": "archer hunter with bow and arrows, forest ranger, hooded cloak, "
+                  "agile build, quiver on back",
+        "rogue": "rogue assassin in dark leather, dual daggers, stealthy, "
+                 "hooded, shadow blending",
+        "healer": "healer cleric in white robes, holy book, divine aura, "
+                  "gentle expression, sacred symbols",
+        "monster": "fantasy monster creature, fearsome, demonic, boss enemy, "
+                   "intimidating, detailed texture",
+        "npc": "friendly NPC villager, simple clothes, approachable, "
+               "warm expression, casual stance",
     }
+
+    # 负面提示词：排除常见AI图像缺陷
+    NEGATIVE_PROMPT = (
+        "blurry, low quality, watermark, signature, text, deformed, "
+        "disfigured, bad anatomy, bad proportions, extra limbs, "
+        "mutated, ugly, duplicate, morbid, mutilated, "
+        "out of frame, pixelated, grainy, cropped, "
+        "complex background, gradient background, "
+        "photorealistic, photograph, 3d render, "
+        "multiple characters, partial body"
+    )
+
+    # 质量增强后缀
+    QUALITY_SUFFIX = (
+        "full body character, front view, white background, "
+        "high quality, game asset, concept art, "
+        "clean lines, sharp focus, well-defined edges, "
+        "professional illustration, character design sheet"
+    )
 
     def __init__(self, backend="pollinations", api_key=None):
         self.backend = backend
@@ -133,9 +164,8 @@ class AIGenerator:
         # 用户原始提示词
         parts.append(user_prompt)
 
-        # 通用质量后缀
-        parts.append("full body character, front view, white background, "
-                     "high quality, game asset, concept art")
+        # 质量增强后缀
+        parts.append(self.QUALITY_SUFFIX)
 
         return ", ".join(parts)
 
@@ -148,6 +178,7 @@ class AIGenerator:
             width=width,
             height=height,
             seed=seed,
+            negative=quote(self.NEGATIVE_PROMPT),
         )
 
         start = time.time()
