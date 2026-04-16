@@ -238,11 +238,20 @@ class CharacterEngine:
                 "height": ai_height,
             }
         
-        # 附加各动画的帧数据
+        # 附加各动画的帧数据（v0.3.3: 逐动画FPS，不同动画速度不同）
+        anim_fps = {
+            "idle": 4,    # 呼吸：慢节奏
+            "walk": 10,   # 步行：中速
+            "run": 14,    # 奔跑：快速
+            "jump": 10,   # 跳跃：中速
+            "attack": 12, # 攻击：快速挥砍
+            "hurt": 8,    # 受击：中等反应
+            "die": 6,     # 死亡：慢速倒下
+        }
         for anim_name, frames in animations.items():
             result["animations"][anim_name] = {
                 "frame_count": len(frames),
-                "fps": 8,
+                "fps": anim_fps.get(anim_name, 8),
                 "loop": anim_name != "die",
             }
         
