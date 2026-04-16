@@ -1,6 +1,7 @@
 """
-ArtPipe 角色生成引擎
-纯Python实现，服务端渲染，零外部依赖
+ArtPipe 角色生成引擎 v0.3
+支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
+纯Python实现，零外部依赖
 """
 import hashlib
 import json
@@ -161,8 +162,17 @@ class CharacterEngine:
 
         return {"style": style, "char_type": char_type, "color": color}
 
-    def generate(self, prompt, style=None, char_type=None, seed=None):
-        """核心生成接口：prompt → 完整角色资产包"""
+    def generate(self, prompt, style=None, char_type=None, seed=None,
+                 render_mode="procedural", ai_backend="pollinations",
+                 ai_width=512, ai_height=512):
+        """
+        核心生成接口：prompt → 完整角色资产包
+        
+        render_mode:
+            "procedural" - 纯程序化渲染（v0.2默认，零延迟）
+            "ai"         - AI图像生成（返回AI生成图+程序化骨骼/导出）
+            "hybrid"     - 混合模式（AI图像作为参考，增强程序化渲染配色）
+        """
         parsed = self.parse_prompt(prompt)
         
         s = style or parsed["style"]
@@ -179,18 +189,21 @@ class CharacterEngine:
         base_palette = list(PALETTES[style_cfg["palette_type"]])
         if parsed["color"]:
             base_palette[0] = parsed["color"]
-        # shuffle with rng
         for i in range(len(base_palette) - 1, 0, -1):
             j = rng.int_range(0, i)
             base_palette[i], base_palette[j] = base_palette[j], base_palette[i]
         
-        # 生成角色
         char_id = f"char_{int(time.time())}_{seed % 10000}"
         
-        # 渲染所有动画帧
-        animations = self._render_all_frames(rng, style_cfg, type_cfg, base_palette)
+        # ---- 渲染模式分支 ----
+        ai_result = None
+        if render_mode in ("ai", "hybrid"):
+            ai_result = self._generate_ai_image(
+                prompt, s, ct, seed, ai_backend, ai_width, ai_height
+            )
         
-        # 生成骨骼数据
+        # 程序化渲染（ai模式也做，保证spritesheet可用）
+        animations = self._render_all_frames(rng, style_cfg, type_cfg, base_palette)
         skeleton = self._generate_skeleton(type_cfg, base_palette)
         
         # 构建返回数据
@@ -202,12 +215,26 @@ class CharacterEngine:
             "style_name": style_cfg["name"],
             "char_type": ct,
             "char_type_name": type_cfg["name"],
+            "render_mode": render_mode,
             "canvas_size": {"width": self.CANVAS_W, "height": self.CANVAS_H},
             "palette": [list(c) for c in base_palette],
             "animations": {},
             "skeleton": skeleton,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        
+        # AI图像数据
+        if ai_result:
+            result["ai_image"] = {
+                "image_base64": ai_result["image_base64"],
+                "prompt_used": ai_result["prompt_used"],
+                "backend": ai_result["backend"],
+                "generation_time": ai_result["generation_time"],
+                "size": ai_result["size"],
+                "format": ai_result.get("format", "JPEG"),
+                "width": ai_width,
+                "height": ai_height,
+            }
         
         # 附加各动画的帧数据
         for anim_name, frames in animations.items():
@@ -217,7 +244,7 @@ class CharacterEngine:
                 "loop": anim_name != "die",
             }
         
-        # SpriteSheet PNG（所有帧拼合）
+        # SpriteSheet PNG
         all_frames = []
         frame_map = {}
         for anim_name, frames in animations.items():
@@ -238,6 +265,20 @@ class CharacterEngine:
         }
         
         return result
+    
+    def _generate_ai_image(self, prompt, style, char_type, seed, backend, width, height):
+        """调用AI图像生成"""
+        try:
+            from .sd_client import AIGenerator
+            gen = AIGenerator(backend=backend)
+            result = gen.generate(
+                prompt=prompt, style=style, char_type=char_type,
+                width=width, height=height, seed=seed, retry=3,
+            )
+            return result
+        except Exception as e:
+            print(f"[Engine] AI generation failed: {e}")
+            return None
 
     def _render_all_frames(self, rng, style_cfg, type_cfg, palette):
         """渲染6种动画的帧"""
