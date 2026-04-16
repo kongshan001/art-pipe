@@ -83,14 +83,66 @@ PALETTES = {
 }
 
 # ---- 角色类型配置 ----
+# v0.3.7: 增加面部表情(face_type)和体型比例(body_ratio/leg_ratio/arm_ratio)
+# face_type: "serious"=严肃(横线嘴+平眉), "cute"=可爱(微笑+弯眉),
+#            "fierce"=凶猛(怒眉+龇牙), "gentle"=温柔(微笑+淡眉), "plain"=普通
 CHAR_TYPES = {
-    "warrior": {"name": "战士", "head_ratio": 0.18, "body_w": 0.35, "has_shield": True, "weapon": "sword"},
-    "mage": {"name": "法师", "head_ratio": 0.20, "body_w": 0.28, "has_robe": True, "weapon": "staff"},
-    "archer": {"name": "弓箭手", "head_ratio": 0.19, "body_w": 0.25, "has_hood": True, "weapon": "bow"},
-    "rogue": {"name": "盗贼", "head_ratio": 0.17, "body_w": 0.22, "has_cape": True, "weapon": "dagger"},
-    "healer": {"name": "治疗师", "head_ratio": 0.20, "body_w": 0.30, "has_wings": False, "weapon": "book"},
-    "monster": {"name": "怪物", "head_ratio": 0.30, "body_w": 0.40, "is_monster": True, "weapon": "claw"},
-    "npc": {"name": "NPC", "head_ratio": 0.20, "body_w": 0.26, "is_plain": True, "weapon": "none"},
+    "warrior": {
+        "name": "战士", "head_ratio": 0.18, "body_w": 0.35,
+        "has_shield": True, "weapon": "sword",
+        "face_type": "serious",
+        "body_ratio": 1.15,  # 宽壮躯干
+        "leg_ratio": 0.90,   # 短粗腿
+        "arm_ratio": 1.10,   # 粗壮手臂
+    },
+    "mage": {
+        "name": "法师", "head_ratio": 0.20, "body_w": 0.28,
+        "has_robe": True, "weapon": "staff",
+        "face_type": "gentle",
+        "body_ratio": 0.90,  # 纤细身体
+        "leg_ratio": 1.15,   # 修长腿
+        "arm_ratio": 0.95,   # 细长手臂
+    },
+    "archer": {
+        "name": "弓箭手", "head_ratio": 0.19, "body_w": 0.25,
+        "has_hood": True, "weapon": "bow",
+        "face_type": "serious",
+        "body_ratio": 0.92,  # 精瘦身体
+        "leg_ratio": 1.10,   # 长腿（灵活）
+        "arm_ratio": 1.15,   # 长臂（拉弓）
+    },
+    "rogue": {
+        "name": "盗贼", "head_ratio": 0.17, "body_w": 0.22,
+        "has_cape": True, "weapon": "dagger",
+        "face_type": "fierce",
+        "body_ratio": 0.85,  # 窄小身材
+        "leg_ratio": 1.10,   # 灵活长腿
+        "arm_ratio": 1.05,   # 匀称手臂
+    },
+    "healer": {
+        "name": "治疗师", "head_ratio": 0.20, "body_w": 0.30,
+        "has_wings": False, "weapon": "book",
+        "face_type": "gentle",
+        "body_ratio": 0.95,  # 正常体型
+        "leg_ratio": 1.00,   # 正常腿
+        "arm_ratio": 0.95,   # 纤细手臂
+    },
+    "monster": {
+        "name": "怪物", "head_ratio": 0.30, "body_w": 0.40,
+        "is_monster": True, "weapon": "claw",
+        "face_type": "fierce",
+        "body_ratio": 1.20,  # 宽大躯干
+        "leg_ratio": 0.80,   # 粗短腿
+        "arm_ratio": 1.20,   # 粗壮长臂
+    },
+    "npc": {
+        "name": "NPC", "head_ratio": 0.20, "body_w": 0.26,
+        "is_plain": True, "weapon": "none",
+        "face_type": "cute",
+        "body_ratio": 1.00,  # 标准体型
+        "leg_ratio": 1.00,   # 标准腿
+        "arm_ratio": 1.00,   # 标准手臂
+    },
 }
 
 
@@ -596,11 +648,14 @@ class CharacterEngine:
         hair_color = palette[3]
         outline = style_cfg.get("outline_color")
         
-        # 根据类型调整比例
+        # 根据类型调整比例（v0.3.7: 应用体型比例差异化）
         head_r = int(H * type_cfg.get("head_ratio", 0.19) / 2)
-        body_w = int(W * type_cfg.get("body_w", 0.25))
-        body_h = int(H * 0.35)
-        leg_h = int(H * 0.2)
+        body_ratio = type_cfg.get("body_ratio", 1.0)
+        leg_ratio = type_cfg.get("leg_ratio", 1.0)
+        arm_ratio = type_cfg.get("arm_ratio", 1.0)
+        body_w = int(W * type_cfg.get("body_w", 0.25) * body_ratio)
+        body_h = int(H * 0.35 * body_ratio)
+        leg_h = int(H * 0.2 * leg_ratio)
         
         # 应用 body_dy/head_dy 独立偏移（v0.3.6修复：body_dy 真正影响躯干位置）
         body_dy = pose["body_dy"]
@@ -615,11 +670,41 @@ class CharacterEngine:
         leg_top = body_bot + 1
         
         # ---- 绘制头部 ----
+        face_type = type_cfg.get("face_type", "plain")
         for y in range(max(0, head_cy - head_r), min(H, head_cy + head_r)):
             for x in range(max(0, cx - head_r), min(W, cx + head_r)):
                 dx, dy = x - cx, y - head_cy
                 if dx*dx + dy*dy <= head_r*head_r:
                     canvas[y][x] = (*skin, 255)
+                    
+                    # ---- v0.3.7: 增强面部细节 ----
+                    # 眉毛区域（眼睛上方1-2像素）
+                    brow_y = -ps - 1
+                    brow_zone_y = dy == brow_y or dy == brow_y - 1
+                    brow_inner = abs(dx) >= head_r//3 and abs(dx) <= head_r//2
+                    
+                    if brow_zone_y and brow_inner:
+                        if face_type == "fierce":
+                            # 怒眉：内低外高（向内倾斜）
+                            brow_offset = 1 if dx > 0 else -1
+                            if dy == brow_y and abs(dx) <= head_r//2 - 1:
+                                canvas[y][x] = (max(0, skin[0]-80), max(0, skin[1]-80), max(0, skin[2]-80), 255)
+                            elif dy == brow_y - 1 and abs(dx) >= head_r//3 + 1:
+                                canvas[y][x] = (max(0, skin[0]-60), max(0, skin[1]-60), max(0, skin[2]-60), 255)
+                        elif face_type == "gentle":
+                            # 温柔淡眉：浅色短横线
+                            if dy == brow_y and abs(dx) >= head_r//3 + 1 and abs(dx) <= head_r//2 - 2:
+                                canvas[y][x] = (max(0, skin[0]-30), max(0, skin[1]-30), max(0, skin[2]-30), 255)
+                        elif face_type == "serious":
+                            # 严肃平眉：深色横线
+                            if dy == brow_y:
+                                canvas[y][x] = (max(0, skin[0]-70), max(0, skin[1]-70), max(0, skin[2]-70), 255)
+                        elif face_type == "cute":
+                            # 可爱弯眉：弧形短眉
+                            brow_curve = 1 if abs(dx) <= head_r//3 + 2 else 0
+                            if dy == brow_y - brow_curve:
+                                canvas[y][x] = (max(0, skin[0]-50), max(0, skin[1]-50), max(0, skin[2]-50), 255)
+                    
                     # 眼睛（v0.3.2: 虹膜+瞳孔+高光三层结构）
                     eye_zone_y = abs(dy) <= ps
                     eye_zone_x = abs(dx) >= head_r//3 and abs(dx) <= head_r//2
@@ -635,9 +720,56 @@ class CharacterEngine:
                         canvas[y][x] = (255, 255, 255, 255)
                     if dy == -ps//2 and dx == -(head_r//3 + max(1, ps//2)):
                         canvas[y][x] = (255, 255, 255, 255)
-                    # 嘴巴
-                    if dy > head_r//3 and abs(dx) <= head_r//4:
-                        canvas[y][x] = (180, 80, 80, 255)
+                    
+                    # 鼻子（v0.3.7: 微小像素鼻子，增加面部立体感）
+                    if dy == 1 and dx == 0:
+                        # 鼻尖：比肤色略深的单像素点
+                        nose_color = (max(0, skin[0]-25), max(0, skin[1]-15), max(0, skin[2]-15))
+                        canvas[y][x] = (*nose_color, 255)
+                    if dy == 0 and dx == 0:
+                        # 鼻梁高光：比肤色略亮的单像素点
+                        nose_hl = (min(255, skin[0]+15), min(255, skin[1]+15), min(255, skin[2]+10))
+                        canvas[y][x] = (*nose_hl, 255)
+                    
+                    # 嘴巴（v0.3.7: 按face_type绘制不同嘴型）
+                    mouth_y = head_r//3 + 1
+                    if dy >= mouth_y and dy <= mouth_y + 1 and abs(dx) <= head_r//4:
+                        if face_type == "cute" or face_type == "gentle":
+                            # 微笑：弧形嘴巴（下凹弧线）
+                            if dy == mouth_y and abs(dx) <= head_r//5:
+                                canvas[y][x] = (200, 90, 90, 255)
+                            # 微笑弧角（两端上翘）
+                            if dy == mouth_y - 1 and (abs(dx) == head_r//5 or abs(dx) == head_r//5 + 1):
+                                canvas[y][x] = (200, 90, 90, 255)
+                        elif face_type == "fierce":
+                            # 龇牙/怒嘴：横向一字嘴+可选尖牙
+                            if dy == mouth_y and abs(dx) <= head_r//4:
+                                canvas[y][x] = (160, 50, 50, 255)
+                            # 尖牙（怪物和盗贼特有）
+                            if dy == mouth_y + 1 and abs(dx) == head_r//5:
+                                canvas[y][x] = (240, 240, 230, 255)
+                        elif face_type == "serious":
+                            # 严肃直线嘴
+                            if dy == mouth_y and abs(dx) <= head_r//5:
+                                canvas[y][x] = (170, 70, 70, 255)
+                        else:
+                            # 普通小嘴
+                            if dy == mouth_y and abs(dx) <= head_r//6:
+                                canvas[y][x] = (180, 80, 80, 255)
+                    
+                    # 腮红（v0.3.7: cute/gentle类型增加淡粉色腮红）
+                    if (face_type == "cute" or face_type == "gentle"):
+                        blush_y = head_r//4
+                        if dy == blush_y and (abs(dx) == head_r//2 + 1 or abs(dx) == head_r//2 + 2):
+                            blush_color = (min(255, skin[0]+40), min(255, skin[1]-10), min(255, skin[2]-20))
+                            if canvas[y][x][3] > 0:
+                                old_r, old_g, old_b, old_a = canvas[y][x]
+                                canvas[y][x] = (
+                                    (old_r + blush_color[0]) // 2,
+                                    (old_g + blush_color[1]) // 2,
+                                    (old_b + blush_color[2]) // 2,
+                                    old_a
+                                )
         
         # 头发
         for y in range(max(0, head_cy - head_r - ps), head_cy):
@@ -683,8 +815,8 @@ class CharacterEngine:
                 if 0 <= y < H and canvas[y][x][3] > 0:
                     canvas[y][x] = (*shoe_color, 255)
         
-        # ---- 绘制手臂（v0.3.1: 独立肢体偏移） ----
-        arm_w = max(ps * 2, leg_w)
+        # ---- 绘制手臂（v0.3.7: arm_ratio差异化手臂粗细） ----
+        arm_w = max(ps * 2, int(leg_w * arm_ratio))
         # 左臂（带偏移）
         ladx, lady = pose["left_arm_dx"], pose["left_arm_dy"]
         for y in range(body_top + ps + lady, min(H, body_bot - ps + lady)):
