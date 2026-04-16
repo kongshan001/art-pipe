@@ -121,10 +121,9 @@ class CharacterEngine:
             "dark": ["暗黑", "dark", "哥特", "gothic", "恶魔", "demon"],
         }
         for s, kws in style_keywords.items():
-            for kw in kws:
-                if kw in prompt_lower:
-                    style = s
-                    break
+            if any(kw in prompt_lower for kw in kws):
+                style = s
+                break
 
         # 检测类型（按优先级匹配，匹配到即停止）
         char_type = "warrior"
@@ -281,35 +280,147 @@ class CharacterEngine:
             return None
 
     def _render_all_frames(self, rng, style_cfg, type_cfg, palette):
-        """渲染6种动画的帧"""
-        ps = style_cfg["pixel_size"]
+        """渲染6种动画的帧（v0.3.1: 每帧独立渲染，支持逐肢体动画）"""
         animations = {}
         
         anim_configs = {
-            "idle":   {"frames": 4, "amp": 1.0},
-            "walk":   {"frames": 6, "amp": 2.0},
-            "run":    {"frames": 6, "amp": 3.0},
-            "attack": {"frames": 6, "amp": 4.0},
-            "hurt":   {"frames": 3, "amp": 2.0},
-            "die":    {"frames": 6, "amp": 5.0},
+            "idle":   {"frames": 4},
+            "walk":   {"frames": 6},
+            "run":    {"frames": 6},
+            "attack": {"frames": 6},
+            "hurt":   {"frames": 3},
+            "die":    {"frames": 6},
         }
-        
-        base_char = self._render_character(rng, style_cfg, type_cfg, palette, 0, "idle")
         
         for anim_name, cfg in anim_configs.items():
             frames = []
             for f in range(cfg["frames"]):
                 t = f / max(cfg["frames"] - 1, 1)
-                frame = self._animate_frame(base_char, rng, style_cfg, type_cfg, palette, anim_name, t, cfg["amp"])
+                # 计算当前帧的肢体姿态参数
+                pose = self._calc_pose(anim_name, t)
+                # 每帧独立渲染（含肢体偏移）
+                frame = self._render_character(rng, style_cfg, type_cfg, palette, f, anim_name, pose)
+                # 后处理：特殊效果
+                if anim_name == "hurt" and int(t * 4) % 2 == 0:
+                    # 受击白闪效果
+                    frame = self._apply_flash(frame, 80)
+                elif anim_name == "die":
+                    # 死亡渐隐
+                    alpha = max(0, int(255 * (1 - t)))
+                    frame = self._apply_alpha(frame, alpha)
                 frames.append(frame)
             animations[anim_name] = frames
         
         return animations
+    
+    def _calc_pose(self, anim, t):
+        """根据动画类型和时间计算各肢体偏移量
+        返回一个 pose dict，包含：
+            left_leg_dx, left_leg_dy  — 左腿偏移
+            right_leg_dx, right_leg_dy — 右腿偏移
+            left_arm_dx, left_arm_dy   — 左臂偏移
+            right_arm_dx, right_arm_dy — 右臂偏移（武器侧）
+            body_dy                    — 身体整体Y偏移
+            head_dy                    — 头部Y偏移
+            weapon_angle               — 武器旋转角度（用于攻击）
+        """
+        pose = {
+            "left_leg_dx": 0, "left_leg_dy": 0,
+            "right_leg_dx": 0, "right_leg_dy": 0,
+            "left_arm_dx": 0, "left_arm_dy": 0,
+            "right_arm_dx": 0, "right_arm_dy": 0,
+            "body_dy": 0, "head_dy": 0,
+            "weapon_angle": 0,
+        }
+        
+        if anim == "idle":
+            # 轻微呼吸浮动
+            pose["body_dy"] = int(math.sin(t * math.pi * 2) * 1.5)
+            pose["head_dy"] = int(math.sin(t * math.pi * 2) * 1.5)
+            
+        elif anim == "walk":
+            # 腿交替迈步 + 轻微身体上下浮动
+            phase = t * math.pi * 2
+            pose["left_leg_dx"] = int(math.sin(phase) * 2)
+            pose["left_leg_dy"] = -int(abs(math.sin(phase)) * 2)
+            pose["right_leg_dx"] = int(math.sin(phase + math.pi) * 2)
+            pose["right_leg_dy"] = -int(abs(math.sin(phase + math.pi)) * 2)
+            pose["body_dy"] = -int(abs(math.sin(phase * 2)) * 1)
+            pose["head_dy"] = pose["body_dy"]
+            # 手臂自然摆动（与腿反向）
+            pose["left_arm_dx"] = int(math.sin(phase + math.pi) * 1)
+            pose["right_arm_dx"] = int(math.sin(phase) * 1)
+            
+        elif anim == "run":
+            # 更大幅度的腿交替 + 身体前倾
+            phase = t * math.pi * 2
+            pose["left_leg_dx"] = int(math.sin(phase) * 3)
+            pose["left_leg_dy"] = -int(abs(math.sin(phase)) * 3)
+            pose["right_leg_dx"] = int(math.sin(phase + math.pi) * 3)
+            pose["right_leg_dy"] = -int(abs(math.sin(phase + math.pi)) * 3)
+            pose["body_dy"] = -int(abs(math.sin(phase * 2)) * 2)
+            pose["head_dy"] = pose["body_dy"]
+            pose["left_arm_dx"] = int(math.sin(phase + math.pi) * 2)
+            pose["right_arm_dx"] = int(math.sin(phase) * 2)
+            pose["left_arm_dy"] = -int(abs(math.sin(phase + math.pi)) * 1)
+            pose["right_arm_dy"] = -int(abs(math.sin(phase)) * 1)
+            
+        elif anim == "attack":
+            # 攻击：右臂（武器侧）前伸 → 收回
+            # t: 0=蓄力, 0.3=挥出, 0.5=命中, 1.0=收回
+            if t < 0.4:
+                # 蓄力阶段：武器后拉
+                swing = t / 0.4  # 0→1
+                pose["right_arm_dx"] = -int(swing * 3)
+                pose["right_arm_dy"] = -int(swing * 2)
+                pose["weapon_angle"] = -swing * 0.5
+            else:
+                # 挥出阶段：快速前刺
+                swing = (t - 0.4) / 0.6  # 0→1
+                retract = max(0, 1 - swing * 1.5)
+                pose["right_arm_dx"] = int(5 * (1 - retract))
+                pose["right_arm_dy"] = -int(3 * (1 - retract))
+                pose["body_dy"] = int(swing * 1)
+                pose["weapon_angle"] = (1 - retract) * 1.0
+            pose["head_dy"] = pose["body_dy"]
+            # 前冲时左腿后蹬
+            if t > 0.3:
+                pose["left_leg_dx"] = -2
+                pose["right_leg_dx"] = 1
+            
+        elif anim == "hurt":
+            # 受击：整体后仰
+            pose["body_dy"] = int(t * 2)
+            pose["head_dy"] = int(t * 3)
+            pose["left_arm_dx"] = int(t * 2)
+            pose["right_arm_dx"] = int(t * 2)
+            
+        elif anim == "die":
+            # 死亡：身体下沉
+            pose["body_dy"] = int(t * 8)
+            pose["head_dy"] = int(t * 10)
+            pose["left_arm_dx"] = int(t * 2)
+            pose["right_arm_dx"] = int(t * 2)
+            pose["left_leg_dx"] = int(t * 1)
+            pose["right_leg_dx"] = int(t * -1)
+        
+        return pose
 
-    def _render_character(self, rng, style_cfg, type_cfg, palette, frame_idx, anim):
-        """渲染单帧角色像素数据"""
+    def _render_character(self, rng, style_cfg, type_cfg, palette, frame_idx, anim, pose=None):
+        """渲染单帧角色像素数据（v0.3.1: 支持逐肢体姿态偏移）"""
         W, H = self.CANVAS_W, self.CANVAS_H
         ps = style_cfg["pixel_size"]
+        
+        # 无 pose 时使用默认（无偏移）
+        if pose is None:
+            pose = {
+                "left_leg_dx": 0, "left_leg_dy": 0,
+                "right_leg_dx": 0, "right_leg_dy": 0,
+                "left_arm_dx": 0, "left_arm_dy": 0,
+                "right_arm_dx": 0, "right_arm_dy": 0,
+                "body_dy": 0, "head_dy": 0,
+                "weapon_angle": 0,
+            }
         
         # 创建空白画布 (RGBA)
         canvas = [[(0,0,0,0) for _ in range(W)] for _ in range(H)]
@@ -327,7 +438,11 @@ class CharacterEngine:
         body_h = int(H * 0.35)
         leg_h = int(H * 0.2)
         
-        head_cy = cy - body_h // 2 - head_r + 2
+        # 应用 body_dy 到整体位置
+        body_dy = pose["body_dy"]
+        head_dy = pose["head_dy"]
+        
+        head_cy = cy - body_h // 2 - head_r + 2 + head_dy
         body_top = head_cy + head_r + 1
         body_bot = body_top + body_h
         leg_top = body_bot + 1
@@ -360,21 +475,35 @@ class CharacterEngine:
                 if abs(x - cx) <= ps:
                     canvas[y][x] = (*accent, 255)
         
-        # ---- 绘制腿 ----
+        # ---- 绘制腿（v0.3.1: 独立肢体偏移） ----
         leg_w = body_w // 3
-        for y in range(leg_top, min(H, leg_top + leg_h)):
-            for x in range(max(0, cx - body_w//2), min(W, cx - body_w//2 + leg_w)):
-                canvas[y][x] = (*body_color, 255)
-            for x in range(max(0, cx + body_w//2 - leg_w), min(W, cx + body_w//2)):
-                canvas[y][x] = (*body_color, 255)
+        # 左腿（带偏移）
+        ldx, ldy = pose["left_leg_dx"], pose["left_leg_dy"]
+        for y in range(leg_top + ldy, min(H, leg_top + ldy + leg_h)):
+            for x in range(max(0, cx - body_w//2 + ldx), min(W, cx - body_w//2 + ldx + leg_w)):
+                if 0 <= y < H:
+                    canvas[y][x] = (*body_color, 255)
+        # 右腿（带偏移）
+        rdx, rdy = pose["right_leg_dx"], pose["right_leg_dy"]
+        for y in range(leg_top + rdy, min(H, leg_top + rdy + leg_h)):
+            for x in range(max(0, cx + body_w//2 - leg_w + rdx), min(W, cx + body_w//2 + rdx)):
+                if 0 <= y < H:
+                    canvas[y][x] = (*body_color, 255)
         
-        # ---- 绘制手臂 ----
+        # ---- 绘制手臂（v0.3.1: 独立肢体偏移） ----
         arm_w = max(ps * 2, leg_w)
-        for y in range(body_top + ps, min(H, body_bot - ps)):
-            for x in range(max(0, cx - body_w//2 - arm_w), cx - body_w//2):
-                canvas[y][x] = (*skin, 255)
-            for x in range(cx + body_w//2, min(W, cx + body_w//2 + arm_w)):
-                canvas[y][x] = (*skin, 255)
+        # 左臂（带偏移）
+        ladx, lady = pose["left_arm_dx"], pose["left_arm_dy"]
+        for y in range(body_top + ps + lady, min(H, body_bot - ps + lady)):
+            for x in range(max(0, cx - body_w//2 - arm_w + ladx), min(W, cx - body_w//2 + ladx)):
+                if 0 <= y < H:
+                    canvas[y][x] = (*skin, 255)
+        # 右臂（带偏移，武器侧）
+        radx, rady = pose["right_arm_dx"], pose["right_arm_dy"]
+        for y in range(body_top + ps + rady, min(H, body_bot - ps + rady)):
+            for x in range(cx + body_w//2 + radx, min(W, cx + body_w//2 + arm_w + radx)):
+                if 0 <= y < H:
+                    canvas[y][x] = (*skin, 255)
         
         # ---- 类型专属配件 ----
         # 战士：盾牌
@@ -457,18 +586,22 @@ class CharacterEngine:
                     if halo_y+1 < H:
                         canvas[halo_y+1][x] = (255, 240, 150, 120)
 
-        # ---- 武器 ----
+        # ---- 武器（v0.3.1: 跟随右臂偏移） ----
         weapon = type_cfg.get("weapon", "none")
-        weapon_x = cx + body_w//2 + arm_w + ps
+        radx, rady = pose["right_arm_dx"], pose["right_arm_dy"]
+        weapon_x = cx + body_w//2 + arm_w + ps + radx
         if weapon in ("sword", "staff", "bow", "dagger"):
-            for y in range(body_top + ps*2, min(H, body_top + body_h//2 + ps*4)):
-                canvas[y][min(W-1, weapon_x)] = (200, 200, 210, 255)
-                if weapon == "sword":
-                    canvas[y][min(W-1, weapon_x+ps)] = (220, 220, 230, 255)
+            for y in range(body_top + ps*2 + rady, min(H, body_top + body_h//2 + ps*4 + rady)):
+                if 0 <= y < H:
+                    canvas[y][min(W-1, weapon_x)] = (200, 200, 210, 255)
+                    if weapon == "sword":
+                        if weapon_x+ps < W:
+                            canvas[y][min(W-1, weapon_x+ps)] = (220, 220, 230, 255)
         elif weapon == "book":
-            for y in range(body_top + ps, body_top + ps*5):
-                for x in range(weapon_x, min(W, weapon_x + ps*3)):
-                    canvas[y][x] = (180, 160, 100, 255)
+            for y in range(body_top + ps + rady, body_top + ps*5 + rady):
+                if 0 <= y < H:
+                    for x in range(weapon_x, min(W, weapon_x + ps*3)):
+                        canvas[y][x] = (180, 160, 100, 255)
         
         # ---- 描边 ----
         if outline:
@@ -521,74 +654,26 @@ class CharacterEngine:
         
         return canvas
 
-    def _animate_frame(self, base_char, rng, style_cfg, type_cfg, palette, anim, t, amp):
-        """基于基础帧生成动画帧（偏移/变形）"""
+    def _apply_flash(self, frame, intensity):
+        """对帧应用白闪效果（受击闪烁）"""
         W, H = self.CANVAS_W, self.CANVAS_H
-        frame = [list(row) for row in base_char]  # deep copy
-        
-        if anim == "idle":
-            # 轻微上下浮动
-            offset = int(math.sin(t * math.pi * 2) * 1.5)
-            frame = self._shift_y(frame, offset, W, H)
-        
-        elif anim == "walk":
-            # 左右晃动 + 腿交替
-            offset_x = int(math.sin(t * math.pi * 2) * amp)
-            offset_y = int(abs(math.sin(t * math.pi * 2)) * -1)
-            frame = self._shift_x(frame, offset_x, W, H)
-            frame = self._shift_y(frame, offset_y, W, H)
-        
-        elif anim == "run":
-            offset_x = int(math.sin(t * math.pi * 2) * amp * 1.5)
-            offset_y = int(abs(math.sin(t * math.pi * 2)) * -2)
-            frame = self._shift_x(frame, offset_x, W, H)
-            frame = self._shift_y(frame, offset_y, W, H)
-        
-        elif anim == "attack":
-            # 向前冲
-            offset_x = int(math.sin(t * math.pi) * amp)
-            frame = self._shift_x(frame, offset_x, W, H)
-        
-        elif anim == "hurt":
-            # 闪烁 + 后退
-            offset_x = -int(t * amp)
-            frame = self._shift_x(frame, offset_x, W, H)
-            if int(t * 4) % 2 == 0:
-                # 白闪
-                for y in range(H):
-                    for x in range(W):
-                        r, g, b, a = frame[y][x]
-                        if a > 0:
-                            frame[y][x] = (min(255, r+80), min(255, g+80), min(255, b+80), a)
-        
-        elif anim == "die":
-            # 下沉 + 渐隐
-            offset_y = int(t * 8)
-            alpha = max(0, int(255 * (1 - t)))
-            frame = self._shift_y(frame, offset_y, W, H)
-            for y in range(H):
-                for x in range(W):
-                    r, g, b, a = frame[y][x]
-                    if a > 0:
-                        frame[y][x] = (r, g, b, alpha)
-        
-        return frame
-
-    def _shift_y(self, canvas, offset, w, h):
-        result = [[(0,0,0,0)]*w for _ in range(h)]
-        for y in range(h):
-            ny = y + offset
-            if 0 <= ny < h:
-                result[ny] = list(canvas[y])
+        result = [list(row) for row in frame]
+        for y in range(H):
+            for x in range(W):
+                r, g, b, a = result[y][x]
+                if a > 0:
+                    result[y][x] = (min(255, r+intensity), min(255, g+intensity), min(255, b+intensity), a)
         return result
-
-    def _shift_x(self, canvas, offset, w, h):
-        result = [[(0,0,0,0)]*w for _ in range(h)]
-        for y in range(h):
-            for x in range(w):
-                nx = x + offset
-                if 0 <= nx < w:
-                    result[y][nx] = canvas[y][x]
+    
+    def _apply_alpha(self, frame, alpha):
+        """对帧应用全局透明度（死亡渐隐）"""
+        W, H = self.CANVAS_W, self.CANVAS_H
+        result = [list(row) for row in frame]
+        for y in range(H):
+            for x in range(W):
+                r, g, b, a = result[y][x]
+                if a > 0:
+                    result[y][x] = (r, g, b, alpha)
         return result
 
     def _generate_skeleton(self, type_cfg, palette):
