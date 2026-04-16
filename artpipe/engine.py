@@ -731,15 +731,16 @@ class CharacterEngine:
                     for x in range(weapon_x, min(W, weapon_x + ps*3)):
                         canvas[y][x] = (180, 160, 100, 255)
         
-        # ---- 描边 ----
+        # ---- 描边（v0.3.4: 非破坏性8方向描边，保留角色细节） ----
         if outline:
             outline_layer = [[False]*W for _ in range(H)]
             for y in range(H):
                 for x in range(W):
-                    if canvas[y][x][3] > 0:
-                        for dx2, dy2 in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    if canvas[y][x][3] == 0:  # 空白像素
+                        # 检查8方向是否有角色像素，若有则在空白处画描边
+                        for dx2, dy2 in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
                             nx, ny = x+dx2, y+dy2
-                            if 0 <= nx < W and 0 <= ny < H and canvas[ny][nx][3] == 0:
+                            if 0 <= nx < W and 0 <= ny < H and canvas[ny][nx][3] > 0:
                                 outline_layer[y][x] = True
                                 break
             for y in range(H):
@@ -763,22 +764,40 @@ class CharacterEngine:
                                 new_canvas[py][px] = color
             canvas = new_canvas
         
-        # ---- 明暗层次（方向光照增加立体感） ----
-        # 光从左上方来：左侧偏亮、右侧偏暗
+        # ---- 明暗层次（v0.3.4: 双轴光照+深度阴影增强立体感） ----
+        # 光源设定：左上方主光源 + 顶部环境光
         for y in range(H):
             for x in range(W):
                 r, g, b, a = canvas[y][x]
                 if a == 0:
                     continue
-                bias = (x - cx) / (W // 2)  # -1 到 1
-                if bias < -0.2:
-                    # 左侧高光
-                    lift = int(abs(bias) * 12)
-                    canvas[y][x] = (min(255, r+lift), min(255, g+lift), min(255, b+lift), a)
-                elif bias > 0.2:
-                    # 右侧阴影
-                    shadow = int(bias * 18)
-                    canvas[y][x] = (max(0, r-shadow), max(0, g-shadow), max(0, b-shadow), a)
+                
+                # 水平偏移：左亮右暗（主光源方向）
+                h_bias = (x - cx) / max(1, W // 2)  # -1 到 1
+                
+                # 垂直偏移：上亮下暗（顶光环境照明）
+                v_bias = (y - H * 0.3) / max(1, H * 0.7)  # 上部为负，下部为正
+                
+                lift = 0
+                shadow = 0
+                
+                # 水平光照（主光源从左上方照射）
+                if h_bias < -0.15:
+                    lift += int(abs(h_bias) * 10)
+                elif h_bias > 0.15:
+                    shadow += int(h_bias * 14)
+                
+                # 垂直深度（顶部受光更强，底部更暗，模拟顶光）
+                if v_bias < -0.2:
+                    lift += int(abs(v_bias) * 6)
+                elif v_bias > 0.25:
+                    shadow += int(v_bias * 8)
+                
+                if lift > 0 or shadow > 0:
+                    r2 = min(255, max(0, r + lift - shadow))
+                    g2 = min(255, max(0, g + lift - shadow))
+                    b2 = min(255, max(0, b + lift - shadow))
+                    canvas[y][x] = (r2, g2, b2, a)
         
         return canvas
 
