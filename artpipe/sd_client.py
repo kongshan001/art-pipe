@@ -16,7 +16,7 @@ from urllib.error import URLError, HTTPError
 BACKENDS = {
     "pollinations": {
         "name": "Pollinations.ai",
-        "url_template": "https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&seed={seed}&nologo=true&model=flux&negative={negative}",
+        "url_template": "https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&seed={seed}&nologo=true&model=flux-anime&negative={negative}",
         "timeout": 60,
         "free": True,
     },
@@ -79,23 +79,28 @@ class AIGenerator:
                "warm expression, casual stance",
     }
 
-    # 负面提示词：排除常见AI图像缺陷
+    # 负面提示词：综合通用质量排除 + 游戏精灵专用排除
     NEGATIVE_PROMPT = (
-        "blurry, low quality, watermark, signature, text, deformed, "
-        "disfigured, bad anatomy, bad proportions, extra limbs, "
-        "mutated, ugly, duplicate, morbid, mutilated, "
-        "out of frame, pixelated, grainy, cropped, "
-        "complex background, gradient background, "
-        "photorealistic, photograph, 3d render, "
+        "lowres, bad anatomy, bad hands, bad proportions, text, error, "
+        "missing fingers, extra digit, fewer digits, cropped, worst quality, "
+        "low quality, normal quality, jpeg artifacts, signature, watermark, "
+        "username, blurry, deformed, disfigured, extra limbs, extra arms, "
+        "mutated, ugly, duplicate, morbid, mutilated, out of frame, "
+        "grainy, noisy, jpeg compression, "
+        "3d render, realistic, photorealistic, photograph, oil painting, "
+        "detailed background, complex background, gradient background, "
+        "volumetric lighting, bokeh, lens flare, depth of field, "
         "multiple characters, partial body"
     )
 
-    # 质量增强后缀
+    # 质量增强后缀 — 遵循 [quality → subject → framing → style → bg] 结构
     QUALITY_SUFFIX = (
-        "full body character, front view, white background, "
-        "high quality, game asset, concept art, "
+        "full body character, front view, facing camera, "
+        "white background, simple solid background, "
+        "masterpiece, best quality, highly detailed, game asset, "
+        "concept art, character design sheet, "
         "clean lines, sharp focus, well-defined edges, "
-        "professional illustration, character design sheet"
+        "professional illustration"
     )
 
     def __init__(self, backend="pollinations", api_key=None):
@@ -104,9 +109,19 @@ class AIGenerator:
         self._last_request_time = 0
 
     def generate(self, prompt, style="cartoon", char_type="warrior",
-                 width=512, height=512, seed=None, retry=3):
+                 width=512, height=512, seed=None, retry=3, pose=None):
         """
         生成AI角色图像
+
+        Args:
+            prompt: 用户描述
+            style: 风格 (pixel/cartoon/anime/western/dark)
+            char_type: 角色类型 (warrior/mage/archer/rogue/healer/monster/npc)
+            width: 图像宽度
+            height: 图像高度
+            seed: 随机种子
+            retry: 重试次数
+            pose: 姿势 (idle/walk/run/attack/hurt/die)，若提供则加入prompt
 
         Returns:
             dict with keys:
@@ -119,7 +134,7 @@ class AIGenerator:
             or None on failure
         """
         # 构建增强提示词
-        full_prompt = self._build_prompt(prompt, style, char_type)
+        full_prompt = self._build_prompt(prompt, style, char_type, pose)
 
         if seed is None:
             seed = int(time.time()) % 2147483647
@@ -148,23 +163,33 @@ class AIGenerator:
 
         return None
 
-    def _build_prompt(self, user_prompt, style, char_type):
-        """构建高质量游戏角色提示词"""
+    def _build_prompt(self, user_prompt, style, char_type, pose=None):
+        """构建高质量游戏角色提示词
+        结构: [quality_tags] → [style] → [char_type] → [user_desc] → [pose] → [quality_suffix]
+        遵循业界最佳实践的层次化prompt组织方式
+        """
         parts = []
 
-        # 风格前缀
+        # 1. 质量标签前置（模型最先处理的部分权重最高）
+        parts.append("masterpiece, best quality, highly detailed")
+
+        # 2. 风格描述
         style_suffix = self.STYLE_PROMPTS.get(style, self.STYLE_PROMPTS["cartoon"])
         parts.append(style_suffix)
 
-        # 角色类型
+        # 3. 角色类型
         type_desc = self.TYPE_PROMPTS.get(char_type, "")
         if type_desc:
             parts.append(type_desc)
 
-        # 用户原始提示词
+        # 4. 用户原始提示词
         parts.append(user_prompt)
 
-        # 质量增强后缀
+        # 5. 姿势（启用之前未使用的POSE_PROMPTS）
+        if pose and pose in self.POSE_PROMPTS:
+            parts.append(self.POSE_PROMPTS[pose])
+
+        # 6. 质量增强后缀
         parts.append(self.QUALITY_SUFFIX)
 
         return ", ".join(parts)
@@ -186,6 +211,12 @@ class AIGenerator:
         resp = urlopen(req, timeout=BACKENDS["pollinations"]["timeout"])
         data = resp.read()
         elapsed = time.time() - start
+
+        # 验证响应确实是图片
+        content_type = resp.headers.get("Content-Type", "")
+        if content_type and not content_type.startswith("image/"):
+            err_msg = data[:200].decode("utf-8", errors="replace")
+            raise ValueError(f"Pollinations returned non-image ({content_type}): {err_msg}")
 
         if len(data) < 5000:
             # Too small = error response

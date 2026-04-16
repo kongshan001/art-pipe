@@ -292,46 +292,106 @@ class CharacterEngine:
             return None
 
     def _harmonize_palette(self, palette, rng):
-        """v0.3.2: 基于色彩理论优化调色板和谐度
-        对次要颜色施加与主色的互补/类似色关系，确保整体配色协调
+        """v0.3.5: 基于HSV色彩理论的真正色相和谐算法
+        计算主色色相后，根据和谐模式旋转次要色的色相角度：
+        - 类似色(analogous): ±30° 色相偏移，温暖协调
+        - 三角色(triadic): ±120° 色相偏移，活泼对比
+        - 分裂互补(split-complementary): ±150° 色相偏移，戏剧张力
         """
-        if not palette:
+        if not palette or len(palette) < 2:
             return palette
-        
-        # 主色
+
+        # --- 完整 RGB → HSV 转换 ---
+        def rgb_to_hsv(r, g, b):
+            r, g, b = r / 255.0, g / 255.0, b / 255.0
+            mx, mn = max(r, g, b), min(r, g, b)
+            diff = mx - mn
+            # 色相 H (0~360)
+            if diff == 0:
+                h = 0
+            elif mx == r:
+                h = (60 * ((g - b) / diff) + 360) % 360
+            elif mx == g:
+                h = (60 * ((b - r) / diff) + 120) % 360
+            else:
+                h = (60 * ((r - g) / diff) + 240) % 360
+            # 饱和度 S
+            s = 0 if mx == 0 else diff / mx
+            # 明度 V
+            v = mx
+            return h, s, v
+
+        def hsv_to_rgb(h, s, v):
+            h = h % 360
+            c = v * s
+            x = c * (1 - abs((h / 60) % 2 - 1))
+            m = v - c
+            if h < 60:
+                r, g, b = c, x, 0
+            elif h < 120:
+                r, g, b = x, c, 0
+            elif h < 180:
+                r, g, b = 0, c, x
+            elif h < 240:
+                r, g, b = 0, x, c
+            elif h < 300:
+                r, g, b = x, 0, c
+            else:
+                r, g, b = c, 0, x
+            return (
+                min(255, max(0, int((r + m) * 255))),
+                min(255, max(0, int((g + m) * 255))),
+                min(255, max(0, int((b + m) * 255))),
+            )
+
+        # 提取主色HSV
         primary = palette[0]
-        # 将主色转为简化HSV来分析色相关系
-        pr, pg, pb = primary[0]/255.0, primary[1]/255.0, primary[2]/255.0
-        p_max, p_min = max(pr, pg, pb), min(pr, pg, pb)
-        p_sat = (p_max - p_min) if p_max > 0 else 0
-        
-        result = [primary]  # 保持主色不变
-        
+        p_h, p_s, p_v = rgb_to_hsv(*primary)
+
+        result = [primary]  # 主色保持不变
+
+        # 用RNG选择和谐模式（避免所有角色用同一模式）
+        harmony_modes = ["analogous", "triadic", "split_comp"]
+        # 类似色概率50%，三角色30%，分裂互补20%
+        roll = rng.next()
+        if roll < 0.5:
+            mode = "analogous"
+        elif roll < 0.8:
+            mode = "triadic"
+        else:
+            mode = "split_comp"
+
         for i in range(1, len(palette)):
-            r, g, b = palette[i][0]/255.0, palette[i][1]/255.0, palette[i][2]/255.0
-            
-            # 根据与主色的关系微调：向主色的互补色或类似色偏移
-            # 简化实现：轻微降低饱和度使非主色更"配合"主色
-            desat = 0.15  # 去饱和比例
-            # 向灰色方向偏移一点，减少杂色冲突
-            gray = (r + g + b) / 3
-            r2 = r * (1 - desat) + gray * desat
-            g2 = g * (1 - desat) + gray * desat
-            b2 = b * (1 - desat) + gray * desat
-            
-            # 如果主色饱和度高，辅助色适当降低饱和度以突出主色
-            if p_sat > 0.4:
-                extra_desat = 0.1
-                r2 = r2 * (1 - extra_desat) + ((r2+g2+b2)/3) * extra_desat
-                g2 = g2 * (1 - extra_desat) + ((r2+g2+b2)/3) * extra_desat
-                b2 = b2 * (1 - extra_desat) + ((r2+g2+b2)/3) * extra_desat
-            
-            result.append((
-                min(255, max(0, int(r2 * 255))),
-                min(255, max(0, int(g2 * 255))),
-                min(255, max(0, int(b2 * 255))),
-            ))
-        
+            r, g, b = palette[i]
+            h, s, v = rgb_to_hsv(r, g, b)
+
+            # 根据和谐模式旋转色相
+            if mode == "analogous":
+                # 类似色：向主色色相方向旋转，偏移 ±25°
+                hue_offset = (rng.next() - 0.5) * 50  # -25° ~ +25°
+                new_h = p_h + hue_offset
+                # 饱和度微调：保持原色饱和度但略微向主色靠拢
+                new_s = s * 0.7 + p_s * 0.3
+                # 明度保持原值但略微收敛
+                new_v = v * 0.85 + p_v * 0.15
+            elif mode == "triadic":
+                # 三角色：偏移 ±120° 产生互补对比
+                sign = 1 if rng.next() > 0.5 else -1
+                hue_offset = sign * 120 + (rng.next() - 0.5) * 20  # ±10°抖动
+                new_h = p_h + hue_offset
+                # 三角色模式降低饱和度以避免过于刺眼
+                new_s = min(s, p_s) * 0.85
+                new_v = v * 0.8 + p_v * 0.2
+            else:
+                # 分裂互补：偏移 ±150°
+                sign = 1 if rng.next() > 0.5 else -1
+                hue_offset = sign * 150 + (rng.next() - 0.5) * 20
+                new_h = p_h + hue_offset
+                new_s = s * 0.6 + p_s * 0.4
+                new_v = v * 0.75 + p_v * 0.25
+
+            result.append(hsv_to_rgb(new_h, new_s, new_v))
+
         return result
 
     def _render_all_frames(self, rng, style_cfg, type_cfg, palette):
