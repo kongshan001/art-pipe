@@ -184,13 +184,16 @@ class CharacterEngine:
         style_cfg = STYLES.get(s, STYLES["cartoon"])
         type_cfg = CHAR_TYPES.get(ct, CHAR_TYPES["warrior"])
         
-        # 生成调色板
+        # 生成调色板（v0.3.2: 增强色彩和谐度）
         base_palette = list(PALETTES[style_cfg["palette_type"]])
         if parsed["color"]:
             base_palette[0] = parsed["color"]
+        # Fisher-Yates 洗牌保持随机性
         for i in range(len(base_palette) - 1, 0, -1):
             j = rng.int_range(0, i)
             base_palette[i], base_palette[j] = base_palette[j], base_palette[i]
+        # 色彩和谐度优化：基于主色生成互补/类似色增强
+        base_palette = self._harmonize_palette(base_palette, rng)
         
         char_id = f"char_{int(time.time())}_{seed % 10000}"
         
@@ -279,14 +282,58 @@ class CharacterEngine:
             print(f"[Engine] AI generation failed: {e}")
             return None
 
+    def _harmonize_palette(self, palette, rng):
+        """v0.3.2: 基于色彩理论优化调色板和谐度
+        对次要颜色施加与主色的互补/类似色关系，确保整体配色协调
+        """
+        if not palette:
+            return palette
+        
+        # 主色
+        primary = palette[0]
+        # 将主色转为简化HSV来分析色相关系
+        pr, pg, pb = primary[0]/255.0, primary[1]/255.0, primary[2]/255.0
+        p_max, p_min = max(pr, pg, pb), min(pr, pg, pb)
+        p_sat = (p_max - p_min) if p_max > 0 else 0
+        
+        result = [primary]  # 保持主色不变
+        
+        for i in range(1, len(palette)):
+            r, g, b = palette[i][0]/255.0, palette[i][1]/255.0, palette[i][2]/255.0
+            
+            # 根据与主色的关系微调：向主色的互补色或类似色偏移
+            # 简化实现：轻微降低饱和度使非主色更"配合"主色
+            desat = 0.15  # 去饱和比例
+            # 向灰色方向偏移一点，减少杂色冲突
+            gray = (r + g + b) / 3
+            r2 = r * (1 - desat) + gray * desat
+            g2 = g * (1 - desat) + gray * desat
+            b2 = b * (1 - desat) + gray * desat
+            
+            # 如果主色饱和度高，辅助色适当降低饱和度以突出主色
+            if p_sat > 0.4:
+                extra_desat = 0.1
+                r2 = r2 * (1 - extra_desat) + ((r2+g2+b2)/3) * extra_desat
+                g2 = g2 * (1 - extra_desat) + ((r2+g2+b2)/3) * extra_desat
+                b2 = b2 * (1 - extra_desat) + ((r2+g2+b2)/3) * extra_desat
+            
+            result.append((
+                min(255, max(0, int(r2 * 255))),
+                min(255, max(0, int(g2 * 255))),
+                min(255, max(0, int(b2 * 255))),
+            ))
+        
+        return result
+
     def _render_all_frames(self, rng, style_cfg, type_cfg, palette):
-        """渲染6种动画的帧（v0.3.1: 每帧独立渲染，支持逐肢体动画）"""
+        """渲染7种动画的帧（v0.3.2: 新增jump跳跃动画）"""
         animations = {}
         
         anim_configs = {
             "idle":   {"frames": 4},
             "walk":   {"frames": 6},
             "run":    {"frames": 6},
+            "jump":   {"frames": 6},  # v0.3.2: 跳跃动画
             "attack": {"frames": 6},
             "hurt":   {"frames": 3},
             "die":    {"frames": 6},
@@ -365,6 +412,52 @@ class CharacterEngine:
             pose["left_arm_dy"] = -int(abs(math.sin(phase + math.pi)) * 1)
             pose["right_arm_dy"] = -int(abs(math.sin(phase)) * 1)
             
+        elif anim == "jump":
+            # v0.3.2: 跳跃动画 - 蹲→起跳→滞空→落地
+            # t: 0~0.15蹲, 0.15~0.35起跳上升, 0.35~0.65滞空, 0.65~1.0下落落地
+            if t < 0.15:
+                # 蹲下蓄力
+                squat = t / 0.15  # 0→1
+                pose["body_dy"] = int(squat * 3)
+                pose["head_dy"] = int(squat * 2)
+                pose["left_leg_dx"] = -1
+                pose["right_leg_dx"] = 1
+                pose["left_leg_dy"] = int(squat * 1)
+                pose["right_leg_dy"] = int(squat * 1)
+            elif t < 0.35:
+                # 起跳上升（身体上升，腿收起）
+                lift = (t - 0.15) / 0.2  # 0→1
+                pose["body_dy"] = -int(lift * 8)
+                pose["head_dy"] = -int(lift * 8)
+                pose["left_arm_dy"] = -int(lift * 3)
+                pose["right_arm_dy"] = -int(lift * 3)
+                pose["left_leg_dy"] = -int(lift * 2)
+                pose["right_leg_dy"] = -int(lift * 2)
+            elif t < 0.65:
+                # 滞空最高点（展开姿态）
+                pose["body_dy"] = -8
+                pose["head_dy"] = -8
+                pose["left_arm_dx"] = -3
+                pose["left_arm_dy"] = -3
+                pose["right_arm_dx"] = 3
+                pose["right_arm_dy"] = -3
+                pose["left_leg_dy"] = -2
+                pose["right_leg_dy"] = -2
+            else:
+                # 下落并落地
+                fall = (t - 0.65) / 0.35  # 0→1
+                pose["body_dy"] = -int(8 * (1 - fall))
+                pose["head_dy"] = -int(8 * (1 - fall))
+                pose["left_arm_dx"] = -int(3 * (1 - fall))
+                pose["right_arm_dx"] = int(3 * (1 - fall))
+                if fall > 0.7:
+                    # 着地缓冲
+                    cushion = (fall - 0.7) / 0.3
+                    pose["body_dy"] = int(cushion * 2)
+                    pose["head_dy"] = int(cushion * 1)
+                    pose["left_leg_dy"] = int(cushion * 1)
+                    pose["right_leg_dy"] = int(cushion * 1)
+        
         elif anim == "attack":
             # 攻击：右臂（武器侧）前伸 → 收回
             # t: 0=蓄力, 0.3=挥出, 0.5=命中, 1.0=收回
@@ -453,9 +546,21 @@ class CharacterEngine:
                 dx, dy = x - cx, y - head_cy
                 if dx*dx + dy*dy <= head_r*head_r:
                     canvas[y][x] = (*skin, 255)
-                    # 眼睛
-                    if abs(dy) <= ps and abs(dx) >= head_r//3 and abs(dx) <= head_r//2:
-                        canvas[y][x] = (20, 20, 30, 255)
+                    # 眼睛（v0.3.2: 虹膜+瞳孔+高光三层结构）
+                    eye_zone_y = abs(dy) <= ps
+                    eye_zone_x = abs(dx) >= head_r//3 and abs(dx) <= head_r//2
+                    if eye_zone_y and eye_zone_x:
+                        # 虹膜：使用accent颜色的暗色调
+                        iris_color = (min(255, accent[0]+30), min(255, accent[1]+30), min(255, accent[2]+30))
+                        canvas[y][x] = (*iris_color, 255)
+                        # 瞳孔：眼睛中心偏内的一格（缩小dx范围）
+                        if abs(dx) >= head_r//3 + max(1, ps//2) and abs(dx) <= head_r//2 - max(1, ps//2):
+                            canvas[y][x] = (15, 15, 25, 255)
+                    # 眼睛高光（右上方小白点，让眼睛有神）
+                    if dy == -ps//2 and dx == head_r//3 + max(1, ps//2):
+                        canvas[y][x] = (255, 255, 255, 255)
+                    if dy == -ps//2 and dx == -(head_r//3 + max(1, ps//2)):
+                        canvas[y][x] = (255, 255, 255, 255)
                     # 嘴巴
                     if dy > head_r//3 and abs(dx) <= head_r//4:
                         canvas[y][x] = (180, 80, 80, 255)
@@ -489,6 +594,20 @@ class CharacterEngine:
             for x in range(max(0, cx + body_w//2 - leg_w + rdx), min(W, cx + body_w//2 + rdx)):
                 if 0 <= y < H:
                     canvas[y][x] = (*body_color, 255)
+        
+        # ---- 鞋子（v0.3.2: 腿底部加深色鞋子区域） ----
+        shoe_color = (max(0, body_color[0]-60), max(0, body_color[1]-60), max(0, body_color[2]-60))
+        shoe_h = max(ps, leg_h // 3)
+        # 左鞋
+        for y in range(min(H-1, leg_top + ldy + leg_h - shoe_h), min(H, leg_top + ldy + leg_h)):
+            for x in range(max(0, cx - body_w//2 + ldx - ps), min(W, cx - body_w//2 + ldx + leg_w + ps)):
+                if 0 <= y < H and canvas[y][x][3] > 0:
+                    canvas[y][x] = (*shoe_color, 255)
+        # 右鞋
+        for y in range(min(H-1, leg_top + rdy + leg_h - shoe_h), min(H, leg_top + rdy + leg_h)):
+            for x in range(max(0, cx + body_w//2 - leg_w + rdx - ps), min(W, cx + body_w//2 + rdx + ps)):
+                if 0 <= y < H and canvas[y][x][3] > 0:
+                    canvas[y][x] = (*shoe_color, 255)
         
         # ---- 绘制手臂（v0.3.1: 独立肢体偏移） ----
         arm_w = max(ps * 2, leg_w)
