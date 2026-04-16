@@ -528,23 +528,25 @@ class CharacterEngine:
                     pose["right_leg_dy"] = int(cushion * 1)
         
         elif anim == "attack":
-            # 攻击：右臂（武器侧）前伸 → 收回
-            # t: 0=蓄力, 0.3=挥出, 0.5=命中, 1.0=收回
+            # 攻击：右臂（武器侧）前伸 → 收回（v0.3.6: 身体前冲+头部后仰分离）
+            # t: 0=蓄力, 0.4=挥出, 1.0=收回
             if t < 0.4:
-                # 蓄力阶段：武器后拉
+                # 蓄力阶段：武器后拉，身体微微后坐
                 swing = t / 0.4  # 0→1
                 pose["right_arm_dx"] = -int(swing * 3)
                 pose["right_arm_dy"] = -int(swing * 2)
                 pose["weapon_angle"] = -swing * 0.5
+                pose["body_dy"] = int(swing * 1)  # 后坐
+                pose["head_dy"] = int(swing * 1)  # 头随身体
             else:
-                # 挥出阶段：快速前刺
+                # 挥出阶段：快速前刺，身体前冲但头部保持
                 swing = (t - 0.4) / 0.6  # 0→1
                 retract = max(0, 1 - swing * 1.5)
                 pose["right_arm_dx"] = int(5 * (1 - retract))
                 pose["right_arm_dy"] = -int(3 * (1 - retract))
-                pose["body_dy"] = int(swing * 1)
+                pose["body_dy"] = -int(swing * 2)  # 身体前冲（独立于头部）
+                pose["head_dy"] = int(max(0, 1 - swing * 2))  # 头部略微后仰后恢复
                 pose["weapon_angle"] = (1 - retract) * 1.0
-            pose["head_dy"] = pose["body_dy"]
             # 前冲时左腿后蹬
             if t > 0.3:
                 pose["left_leg_dx"] = -2
@@ -600,12 +602,15 @@ class CharacterEngine:
         body_h = int(H * 0.35)
         leg_h = int(H * 0.2)
         
-        # 应用 body_dy 到整体位置
+        # 应用 body_dy/head_dy 独立偏移（v0.3.6修复：body_dy 真正影响躯干位置）
         body_dy = pose["body_dy"]
         head_dy = pose["head_dy"]
         
+        # 头部位置：仅受 head_dy 影响
         head_cy = cy - body_h // 2 - head_r + 2 + head_dy
-        body_top = head_cy + head_r + 1
+        # 身体位置：基础位置 + body_dy 独立偏移（不再跟随头部head_dy）
+        body_top_base = cy - body_h // 2 + 2 + 1  # 颈部基准位置
+        body_top = body_top_base + body_dy
         body_bot = body_top + body_h
         leg_top = body_bot + 1
         
@@ -774,21 +779,68 @@ class CharacterEngine:
                     if halo_y+1 < H:
                         canvas[halo_y+1][x] = (255, 240, 150, 120)
 
-        # ---- 武器（v0.3.1: 跟随右臂偏移） ----
+        # ---- 武器（v0.3.6: 跟随右臂偏移 + weapon_angle旋转） ----
         weapon = type_cfg.get("weapon", "none")
         radx, rady = pose["right_arm_dx"], pose["right_arm_dy"]
-        weapon_x = cx + body_w//2 + arm_w + ps + radx
+        weapon_angle = pose.get("weapon_angle", 0)
+        weapon_base_x = cx + body_w//2 + arm_w + ps + radx
+        weapon_base_y = body_top + ps*2 + rady
+        weapon_len = body_h//2 + ps*3  # 武器长度
+        
         if weapon in ("sword", "staff", "bow", "dagger"):
-            for y in range(body_top + ps*2 + rady, min(H, body_top + body_h//2 + ps*4 + rady)):
-                if 0 <= y < H:
-                    canvas[y][min(W-1, weapon_x)] = (200, 200, 210, 255)
-                    if weapon == "sword":
-                        if weapon_x+ps < W:
-                            canvas[y][min(W-1, weapon_x+ps)] = (220, 220, 230, 255)
+            # v0.3.6: 用Bresenham直线算法按weapon_angle画倾斜武器
+            # weapon_angle: 0=垂直, 负=后拉, 正=前挥
+            # 转换为像素偏移：每单位角度偏移 weapon_len*0.4 像素
+            tip_dx = int(weapon_angle * weapon_len * 0.4)
+            tip_dy = weapon_len
+            tip_x = weapon_base_x + tip_dx
+            tip_y = weapon_base_y + tip_dy
+            
+            # Bresenham画线（从base到tip）
+            x0, y0 = weapon_base_x, weapon_base_y
+            x1, y1 = tip_x, min(H-1, tip_y)
+            dx_w = abs(x1 - x0)
+            dy_w = abs(y1 - y0)
+            sx = 1 if x0 < x1 else -1
+            sy = 1 if y0 < y1 else -1
+            err = dx_w - dy_w
+            px_count = 0
+            while True:
+                # 在武器路径上画像素
+                if 0 <= y0 < H and 0 <= x0 < W:
+                    canvas[y0][x0] = (200, 200, 210, 255)
+                    if weapon == "sword" and x0+1 < W:
+                        canvas[y0][x0+1] = (220, 220, 230, 255)
+                px_count += 1
+                if px_count > weapon_len + 2:
+                    break
+                if x0 == x1 and y0 == y1:
+                    break
+                e2 = 2 * err
+                if e2 > -dy_w:
+                    err -= dy_w
+                    x0 += sx
+                if e2 < dx_w:
+                    err += dx_w
+                    y0 += sy
+            
+            # 武器尖端装饰（剑尖/杖头/弓弧）
+            if 0 <= tip_y < H and 0 <= tip_x < W:
+                if weapon == "sword":
+                    canvas[tip_y][min(W-1, tip_x)] = (240, 240, 250, 255)
+                elif weapon == "staff":
+                    # 杖顶宝石
+                    for gy in range(max(0, tip_y-ps*2), min(H, tip_y+1)):
+                        for gx in range(max(0, tip_x-ps), min(W, tip_x+ps+1)):
+                            if 0 <= gy < H and 0 <= gx < W:
+                                canvas[gy][gx] = (*accent, 255)
+                elif weapon == "dagger":
+                    canvas[tip_y][min(W-1, tip_x)] = (180, 180, 190, 255)
+        
         elif weapon == "book":
             for y in range(body_top + ps + rady, body_top + ps*5 + rady):
                 if 0 <= y < H:
-                    for x in range(weapon_x, min(W, weapon_x + ps*3)):
+                    for x in range(weapon_base_x, min(W, weapon_base_x + ps*3)):
                         canvas[y][x] = (180, 160, 100, 255)
         
         # ---- 描边（v0.3.4: 非破坏性8方向描边，保留角色细节） ----
