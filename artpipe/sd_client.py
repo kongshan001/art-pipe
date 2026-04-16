@@ -232,7 +232,7 @@ class AIGenerator:
         elapsed = time.time() - start
 
         # Stability returns base64 in JSON
-        if "artifacts" and result.get("artifacts"):
+        if result.get("artifacts"):
             img_b64 = result["artifacts"][0]["base64"]
             img_bytes = base64.b64decode(img_b64)
             return {

@@ -376,6 +376,87 @@ class CharacterEngine:
             for x in range(cx + body_w//2, min(W, cx + body_w//2 + arm_w)):
                 canvas[y][x] = (*skin, 255)
         
+        # ---- 类型专属配件 ----
+        # 战士：盾牌
+        if type_cfg.get("has_shield"):
+            shield_x = cx - body_w//2 - arm_w - ps*2
+            shield_cy = (body_top + body_bot) // 2
+            shield_r = max(ps*2, arm_w + ps)
+            for y in range(max(0, shield_cy - shield_r), min(H, shield_cy + shield_r)):
+                for x in range(max(0, shield_x - shield_r), min(W, shield_x + shield_r)):
+                    sdx, sdy = x - shield_x, y - shield_cy
+                    if sdx*sdx + sdy*sdy <= shield_r*shield_r:
+                        canvas[y][x] = (*accent, 255)
+                        # 盾牌十字纹饰
+                        if abs(sdx) <= ps or abs(sdy) <= ps:
+                            canvas[y][x] = (min(255, accent[0]+50), min(255, accent[1]+50), min(255, accent[2]+50), 255)
+
+        # 法师：长袍下摆（逐渐加宽的袍角）
+        if type_cfg.get("has_robe"):
+            robe_bot = min(H, body_bot + ps*4)
+            robe_w = body_w + ps*4
+            for y in range(body_top + body_h//3, robe_bot):
+                progress = (y - body_top - body_h//3) / max(1, robe_bot - body_top - body_h//3 - 1)
+                extra = int(progress * ps * 2)
+                for x in range(max(0, cx - robe_w//2 - extra), min(W, cx + robe_w//2 + extra)):
+                    if canvas[y][x][3] == 0:
+                        canvas[y][x] = (max(0, body_color[0]-15), max(0, body_color[1]-15), max(0, body_color[2]-15), 255)
+            # 长袍中心装饰条纹
+            for y in range(body_top + body_h//2, robe_bot):
+                for x_off in range(-ps, ps+1):
+                    px = cx + x_off
+                    if 0 <= px < W and canvas[y][px][3] > 0:
+                        canvas[y][px] = (*accent, 255)
+
+        # 弓箭手：兜帽
+        if type_cfg.get("has_hood"):
+            for y in range(max(0, head_cy - head_r - ps*2), min(H, head_cy)):
+                for x in range(max(0, cx - head_r - ps*2), min(W, cx + head_r + ps*2)):
+                    hdx, hdy = x - cx, y - head_cy
+                    outer_r = head_r + ps*2
+                    if hdx*hdx + hdy*hdy <= outer_r*outer_r and hdy < 0:
+                        if canvas[y][x][3] == 0:
+                            canvas[y][x] = (max(0, body_color[0]-25), max(0, body_color[1]-25), max(0, body_color[2]-25), 255)
+
+        # 盗贼：披风（带轻微飘动效果）
+        if type_cfg.get("has_cape"):
+            cape_x_start = cx + body_w//2 + ps
+            cape_w = ps * 3
+            for y in range(body_top + ps, min(H, body_bot + leg_h//2)):
+                sway = int(math.sin((y - body_top) * 0.3) * ps)
+                for x in range(max(0, cape_x_start + sway), min(W, cape_x_start + cape_w + sway)):
+                    if canvas[y][x][3] == 0:
+                        canvas[y][x] = (max(0, body_color[0]-35), max(0, body_color[1]-35), max(0, body_color[2]-35), 255)
+
+        # 怪物：犄角
+        if type_cfg.get("is_monster"):
+            horn_h = max(ps*3, head_r//2 + ps)
+            horn_w = max(ps, 2)
+            for dy2 in range(horn_h):
+                y = max(0, head_cy - head_r - dy2)
+                # 左角
+                lx = max(0, cx - head_r//2 - horn_w)
+                for ddx in range(horn_w):
+                    if 0 <= lx+ddx < W:
+                        canvas[y][lx+ddx] = (min(255, accent[0]+40), min(255, accent[1]+40), min(255, accent[2]+40), 255)
+                # 右角
+                rx = min(W-horn_w, cx + head_r//2)
+                for ddx in range(horn_w):
+                    if 0 <= rx+ddx < W:
+                        canvas[y][rx+ddx] = (min(255, accent[0]+40), min(255, accent[1]+40), min(255, accent[2]+40), 255)
+
+        # 治疗师：光环
+        if type_cfg.get("weapon") == "book":
+            halo_y = max(0, head_cy - head_r - ps*2)
+            halo_rx = head_r + ps*2
+            for x in range(max(0, cx - halo_rx), min(W, cx + halo_rx)):
+                hdx = x - cx
+                if hdx*hdx <= halo_rx*halo_rx:
+                    if halo_y < H:
+                        canvas[halo_y][x] = (255, 230, 100, 180)
+                    if halo_y+1 < H:
+                        canvas[halo_y+1][x] = (255, 240, 150, 120)
+
         # ---- 武器 ----
         weapon = type_cfg.get("weapon", "none")
         weapon_x = cx + body_w//2 + arm_w + ps
@@ -420,6 +501,23 @@ class CharacterEngine:
                             if 0 <= px < W and 0 <= py < H:
                                 new_canvas[py][px] = color
             canvas = new_canvas
+        
+        # ---- 明暗层次（方向光照增加立体感） ----
+        # 光从左上方来：左侧偏亮、右侧偏暗
+        for y in range(H):
+            for x in range(W):
+                r, g, b, a = canvas[y][x]
+                if a == 0:
+                    continue
+                bias = (x - cx) / (W // 2)  # -1 到 1
+                if bias < -0.2:
+                    # 左侧高光
+                    lift = int(abs(bias) * 12)
+                    canvas[y][x] = (min(255, r+lift), min(255, g+lift), min(255, b+lift), a)
+                elif bias > 0.2:
+                    # 右侧阴影
+                    shadow = int(bias * 18)
+                    canvas[y][x] = (max(0, r-shadow), max(0, g-shadow), max(0, b-shadow), a)
         
         return canvas
 
