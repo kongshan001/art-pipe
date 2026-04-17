@@ -2,6 +2,7 @@
 ArtPipe AI图像生成客户端 v0.3
 支持 Pollinations.ai (免费) + HuggingFace Inference API (免费) + 可扩展后端
 零外部依赖，纯标准库实现
+v0.3.31: 风格定制负面提示词 + 按风格动态选择Pollinations模型(pixel→flux, dark→flux, western→flux-realism)
 v0.3.26: Prompt增强 — 添加光照方向描述(左上方光源)、脚部/鞋类可见性要求、角色类型鞋类细节
 v0.3.24: 优化Prompt — 增强角色特征描述，添加装备细节和材质关键词
 v0.3.21: 修复重试seed bug — 重试时轮换seed确保每次生成不同图像
@@ -183,6 +184,51 @@ class AIGenerator:
         "side view, back view, profile view"
     )
 
+    # v0.3.31: 按风格定制的负面提示词 — 针对不同美术风格排除最影响质量的视觉缺陷
+    # 每种风格有独特的"质量陷阱"，例如像素画不应出现抗锯齿，暗黑风格不应出现明亮色彩
+    # 与通用 NEGATIVE_PROMPT 合并使用，Flux 模型对精确的风格排除响应显著
+    STYLE_NEGATIVE_PROMPTS = {
+        "pixel": (
+            "anti-aliased, smooth gradients, soft shading, blurred edges, "
+            "photorealistic, 3d rendered, high resolution, detailed texture, "
+            "subpixel rendering, vector graphics, watercolor, oil painting, "
+            "lens flare, depth of field, bokeh"
+        ),
+        "cartoon": (
+            "photorealistic, hyper-detailed, gritty, dark, horror, "
+            "realistic skin texture, photograph, complex shading, "
+            "3d rendered, CGI, uncanny valley, boring, plain"
+        ),
+        "anime": (
+            "3d render, western cartoon, photorealistic, ugly, "
+            "rough sketch, amateur, low effort, simple, plain, "
+            "realistic proportions, western style eyes"
+        ),
+        "western": (
+            "anime, manga, Japanese style, kawaii, cute, chibi, "
+            "soft shading, pastel colors, delicate, thin lines, "
+            "photorealistic, boring, bland, flat"
+        ),
+        "dark": (
+            "bright, cheerful, colorful, cute, kawaii, cartoon, "
+            "pastel, light-hearted, sunny, happy, clean, "
+            "low contrast, flat lighting, cheerful expression, smile"
+        ),
+    }
+
+    # v0.3.31: 按风格选择最优 Pollinations 模型
+    # flux-anime: 适合卡通/日式风格（默认，训练数据偏二次元）
+    # flux: 通用模型，更适合像素画和暗黑风格的写实/暗色调
+    # flux-realism: 写实模型，适合欧美风格的厚涂/漫画风格
+    # 测试发现 flux-anime 对暗黑风格的色彩偏亮，flux 模型对暗色调响应更好
+    STYLE_MODELS = {
+        "pixel": "flux",          # 通用模型对像素艺术色块响应更准确
+        "cartoon": "flux-anime",  # 动漫模型对卡通风格色彩饱和度更好
+        "anime": "flux-anime",    # 动漫模型对日式风格天然适配
+        "western": "flux-realism",# 写实模型对欧美厚涂/漫画风格表现更好
+        "dark": "flux",           # 通用模型对暗色调和戏剧光照响应更好
+    }
+
     # v0.3.26: 质量增强后缀 — 添加光照方向描述和脚部完整可见性
     # 遵循 [quality → subject → framing → style → bg] 结构
     # 使用明确的画面描述替代抽象的"masterpiece"标签，Flux模型对此响应更好
@@ -232,8 +278,8 @@ class AIGenerator:
                 - thumbnail_b64: str (v0.3.12: 128x192 缩略图 base64)
             or None on failure
         """
-        # 构建增强提示词
-        full_prompt = self._build_prompt(prompt, style, char_type, pose)
+        # 构建增强提示词（v0.3.31: 含风格定制负面提示词）
+        full_prompt, negative = self._build_prompt(prompt, style, char_type, pose)
 
         if seed is None:
             seed = int(time.time()) % 2147483647
@@ -242,13 +288,15 @@ class AIGenerator:
         for attempt in range(retry):
             try:
                 if self.backend == "pollinations":
-                    result = self._call_pollinations(full_prompt, width, height, seed)
+                    result = self._call_pollinations(full_prompt, width, height, seed,
+                                                     style=style, negative=negative)
                 elif self.backend == "huggingface":
                     result = self._call_huggingface(full_prompt, width, height, seed)
                 elif self.backend == "stability":
                     result = self._call_stability(full_prompt, width, height, seed)
                 else:
-                    result = self._call_pollinations(full_prompt, width, height, seed)
+                    result = self._call_pollinations(full_prompt, width, height, seed,
+                                                     style=style, negative=negative)
 
                 if result and result.get("image_bytes"):
                     # v0.3.12: 生成缩略图（128x192 竖版缩略图，适合预览）
@@ -291,6 +339,7 @@ class AIGenerator:
     def _build_prompt(self, user_prompt, style, char_type, pose=None):
         """构建高质量游戏角色提示词
         v0.3.18: 增强版 — 新增视角约束 + 角色体型描述 + 结构化 prompt
+        v0.3.31: 返回 (prompt, negative_prompt) 元组，支持风格定制负面提示词
         结构: [quality] → [viewpoint] → [style as sentence] → [body hint]
               → [char_type with colors] → [user_desc] → [pose] → [quality_suffix]
         """
@@ -365,18 +414,38 @@ class AIGenerator:
         if sentences:
             result_parts.append(" ".join(sentences))
         
-        return ". ".join(result_parts)
+        prompt_result = ". ".join(result_parts)
 
-    def _call_pollinations(self, prompt, width, height, seed):
-        """调用 Pollinations.ai 免费API"""
+        # v0.3.31: 构建风格定制负面提示词 = 通用 + 风格专属
+        style_neg = self.STYLE_NEGATIVE_PROMPTS.get(style, "")
+        if style_neg:
+            combined_negative = self.NEGATIVE_PROMPT + ", " + style_neg
+        else:
+            combined_negative = self.NEGATIVE_PROMPT
+
+        return prompt_result, combined_negative
+
+    def _call_pollinations(self, prompt, width, height, seed, style=None, negative=None):
+        """调用 Pollinations.ai 免费API
+        v0.3.31: 支持按风格选择最优模型 + 风格定制负面提示词
+        """
         self._rate_limit()
 
-        url = BACKENDS["pollinations"]["url_template"].format(
-            prompt=quote(prompt),
-            width=width,
-            height=height,
-            seed=seed,
-            negative=quote(self.NEGATIVE_PROMPT),
+        # v0.3.31: 按风格选择最优 Pollinations 模型
+        model = "flux-anime"  # 默认模型
+        if style and style in self.STYLE_MODELS:
+            model = self.STYLE_MODELS[style]
+
+        # v0.3.31: 使用风格定制的负面提示词（如未提供则用通用版）
+        neg_prompt = negative or self.NEGATIVE_PROMPT
+
+        # v0.3.31: 动态构建URL（支持模型选择）
+        url = (
+            f"https://image.pollinations.ai/prompt/{quote(prompt)}"
+            f"?width={width}&height={height}&seed={seed}"
+            f"&nologo=true&model={model}"
+            f"&negative={quote(neg_prompt)}"
+            f"&enhance=true"
         )
 
         start = time.time()

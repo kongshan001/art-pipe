@@ -2699,6 +2699,62 @@ class CharacterEngine:
                             a_sp
                         )
 
+        # ---- v0.3.31: 皮肤次表面散射（Subsurface Scattering）— 增强皮肤通透感和生命力 ----
+        # 原理：真实光照中，光线穿过皮肤表面后会从内部散射出来，尤其在边缘处形成
+        #       温暖的红/橙色光泽（耳廓、手指、鼻尖等薄皮肤区域最明显）。
+        #       在像素美术中，用暖色边缘光模拟SSS可以让皮肤看起来"有血色"、
+        #       更有生命力，而不是像塑料一样死板。
+        # 实现：在角色左侧（受光侧）的皮肤区域边缘，添加微暖的散射光；
+        #       在右侧（背光侧）的皮肤边缘，添加更强烈的SSS（背光穿透更明显）
+        # 限制：仅在皮肤色（palette[0]）附近像素上应用，避免影响衣物和装备
+        skin_ref = palette[0]
+        # 构建皮肤色检测范围 — 允许经过光照调整后的色差
+        skin_threshold = 80  # 允许的颜色距离（考虑光照偏移后的皮肤色）
+        for y in range(1, H - 1):
+            for x in range(1, W - 1):
+                r, g, b, a = canvas[y][x]
+                if a == 0:
+                    continue
+                # 检查是否为皮肤色（与 palette[0] 近似）
+                dr_s, dg_s, db_s = r - skin_ref[0], g - skin_ref[1], b - skin_ref[2]
+                color_dist = dr_s*dr_s + dg_s*dg_s + db_s*db_s
+                if color_dist > skin_threshold * skin_threshold:
+                    continue  # 非皮肤色，跳过
+                # 检查是否靠近角色轮廓边缘（至少一个邻居是透明像素）
+                is_edge = False
+                for ddx, ddy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nx, ny = x+ddx, y+ddy
+                    if nx < 0 or nx >= W or ny < 0 or ny >= H or canvas[ny][nx][3] == 0:
+                        is_edge = True
+                        break
+                if not is_edge:
+                    continue
+                # 根据水平位置决定SSS强度：
+                # 右侧（背光侧）：SSS更强 — 光从后方穿透薄皮肤
+                # 左侧（受光侧）：SSS较弱 — 正面光照已充分照亮皮肤
+                h_pos = (x - cx) / max(1, W // 2)  # -1=最左, +1=最右
+                if h_pos > 0.1:
+                    # 背光侧：强SSS（红橙色穿透光）
+                    sss_r = 12
+                    sss_g = 4
+                    sss_b = -3
+                elif h_pos < -0.1:
+                    # 受光侧：弱SSS（微暖光晕）
+                    sss_r = 6
+                    sss_g = 3
+                    sss_b = -1
+                else:
+                    # 中心区域：最弱的SSS
+                    sss_r = 3
+                    sss_g = 1
+                    sss_b = 0
+                canvas[y][x] = (
+                    min(255, max(0, r + sss_r)),
+                    min(255, max(0, g + sss_g)),
+                    min(255, max(0, b + sss_b)),
+                    a
+                )
+
         # ---- v0.3.26: 关节缝隙阴影（Joint Crease AO）— 增强身体部件衔接处的深度感 ----
         # 在头部-颈部、肩部-手臂、腰部-腿部等身体部件衔接区域绘制深色缝隙线
         # 原理：真实光照中，两个立体形状的交界处会形成深邃的阴影缝隙（如脖子褶皱、
