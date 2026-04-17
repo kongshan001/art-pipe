@@ -297,6 +297,7 @@ class CharacterEngine:
             "run": 14,    # 奔跑：快速
             "jump": 10,   # 跳跃：中速
             "attack": 12, # 攻击：快速挥砍
+            "defend": 6,  # 防御：慢速稳定（v0.3.8）
             "hurt": 8,    # 受击：中等反应
             "die": 6,     # 死亡：慢速倒下
         }
@@ -456,6 +457,7 @@ class CharacterEngine:
             "run":    {"frames": 6},
             "jump":   {"frames": 6},  # v0.3.2: 跳跃动画
             "attack": {"frames": 6},
+            "defend": {"frames": 5},  # v0.3.8: 防御动画
             "hurt":   {"frames": 3},
             "die":    {"frames": 6},
         }
@@ -499,12 +501,20 @@ class CharacterEngine:
             "right_arm_dx": 0, "right_arm_dy": 0,
             "body_dy": 0, "head_dy": 0,
             "weapon_angle": 0,
+            "body_scale_x": 1.0,  # v0.3.8: 胸腔横向缩放（呼吸）
         }
         
         if anim == "idle":
-            # 轻微呼吸浮动
-            pose["body_dy"] = int(math.sin(t * math.pi * 2) * 1.5)
-            pose["head_dy"] = int(math.sin(t * math.pi * 2) * 1.5)
+            # v0.3.8: 增强呼吸动画 — 浮动+胸腔扩张+手臂微摆
+            breath = math.sin(t * math.pi * 2)
+            pose["body_dy"] = int(breath * 1.5)
+            pose["head_dy"] = int(breath * 1.5)
+            # 胸腔横向缩放：吸气膨胀，呼气收缩（±6%）
+            pose["body_scale_x"] = 1.0 + breath * 0.06
+            # 手臂随呼吸微微摆动（延迟0.3弧度）
+            arm_sway = math.sin(t * math.pi * 2 + 0.3)
+            pose["left_arm_dy"] = round(arm_sway * 1.5)
+            pose["right_arm_dy"] = round(arm_sway * 1.5)
             
         elif anim == "walk":
             # 腿交替迈步 + 轻微身体上下浮动
@@ -611,6 +621,35 @@ class CharacterEngine:
             pose["left_arm_dx"] = int(t * 2)
             pose["right_arm_dx"] = int(t * 2)
             
+        elif anim == "defend":
+            # v0.3.8: 防御动画 — 重心下沉+手臂护身+微颤抖
+            if t < 0.25:
+                # 准备阶段：重心下移，手臂举起
+                prep = t / 0.25  # 0→1
+                pose["body_dy"] = int(prep * 3)
+                pose["head_dy"] = int(prep * 2)
+                pose["left_arm_dx"] = -int(prep * 2)
+                pose["left_arm_dy"] = -int(prep * 4)
+                pose["right_arm_dx"] = int(prep * 1)
+                pose["right_arm_dy"] = -int(prep * 3)
+                pose["left_leg_dy"] = int(prep * 1)
+                pose["right_leg_dy"] = int(prep * 1)
+            else:
+                # 稳定防御姿态（带轻微颤抖感）
+                hold = (t - 0.25) / 0.75
+                tremor = round(math.sin(hold * math.pi * 8) * 1.2)
+                pose["body_dy"] = 3 + tremor
+                pose["head_dy"] = 2
+                pose["left_arm_dx"] = -2
+                pose["left_arm_dy"] = -4
+                pose["right_arm_dx"] = 1
+                pose["right_arm_dy"] = -3
+                pose["left_leg_dy"] = 1
+                pose["right_leg_dy"] = 1
+                # 微微张腿（更稳的防御站姿）
+                pose["left_leg_dx"] = -1
+                pose["right_leg_dx"] = 1
+        
         elif anim == "die":
             # 死亡：身体下沉
             pose["body_dy"] = int(t * 8)
@@ -636,6 +675,7 @@ class CharacterEngine:
                 "right_arm_dx": 0, "right_arm_dy": 0,
                 "body_dy": 0, "head_dy": 0,
                 "weapon_angle": 0,
+                "body_scale_x": 1.0,
             }
         
         # 创建空白画布 (RGBA)
@@ -655,6 +695,8 @@ class CharacterEngine:
         arm_ratio = type_cfg.get("arm_ratio", 1.0)
         body_w = int(W * type_cfg.get("body_w", 0.25) * body_ratio)
         body_h = int(H * 0.35 * body_ratio)
+        # v0.3.8: 呼吸缩放宽度（仅影响身体矩形绘制，不影响肢体定位）
+        body_draw_w = int(body_w * pose.get("body_scale_x", 1.0))
         leg_h = int(H * 0.2 * leg_ratio)
         
         # 应用 body_dy/head_dy 独立偏移（v0.3.6修复：body_dy 真正影响躯干位置）
@@ -778,9 +820,9 @@ class CharacterEngine:
                 if dx*dx + (dy+ps)*(dy+ps) <= (head_r+ps)*(head_r+ps) and dy < -head_r//2:
                     canvas[y][x] = (*hair_color, 255)
         
-        # ---- 绘制身体 ----
+        # ---- 绘制身体（v0.3.8: body_draw_w 支持呼吸缩放） ----
         for y in range(body_top, min(H, body_bot)):
-            for x in range(max(0, cx - body_w//2), min(W, cx + body_w//2)):
+            for x in range(max(0, cx - body_draw_w//2), min(W, cx + body_draw_w//2)):
                 canvas[y][x] = (*body_color, 255)
                 # 中心装饰线
                 if abs(x - cx) <= ps:
