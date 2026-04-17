@@ -1468,6 +1468,57 @@ class CharacterEngine:
                     b2 = min(255, max(0, b + lift - shadow))
                     canvas[y][x] = (r2, g2, b2, a)
         
+        # ---- v0.3.13: 边缘环境光遮蔽（Edge AO）— 增强轮廓立体感 ----
+        # 在角色不透明区域的边缘内侧2像素范围内，添加渐变暗化效果
+        # 模拟真实环境光遮蔽：边缘处环境光更少，显得更暗
+        ao_pass = [[False]*W for _ in range(H)]
+        for y in range(H):
+            for x in range(W):
+                if canvas[y][x][3] > 0:
+                    # 检查4方向（上下左右）是否接触透明区域
+                    for ddx, ddy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                        nx2, ny2 = x+ddx, y+ddy
+                        if nx2 < 0 or nx2 >= W or ny2 < 0 or ny2 >= H or canvas[ny2][nx2][3] == 0:
+                            ao_pass[y][x] = True
+                            break
+        # 对边缘像素做AO暗化（-15亮度），向内1像素做轻微AO（-7亮度）
+        for y in range(H):
+            for x in range(W):
+                if ao_pass[y][x]:
+                    r, g, b, a = canvas[y][x]
+                    canvas[y][x] = (max(0, r-15), max(0, g-15), max(0, b-15), a)
+                    # 向内1像素也做轻微暗化
+                    for ddx, ddy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                        ix, iy = x+ddx, y+ddy
+                        if 0 <= ix < W and 0 <= iy < H and not ao_pass[iy][ix] and canvas[iy][ix][3] > 0:
+                            r3, g3, b3, a3 = canvas[iy][ix]
+                            canvas[iy][ix] = (max(0, r3-7), max(0, g3-7), max(0, b3-7), a3)
+        
+        # ---- v0.3.13: 地面阴影投射 — 椭圆形渐变阴影增强空间感 ----
+        # 在角色脚底位置绘制一个椭圆形半透明阴影，模拟地面投影
+        # 阴影宽度约等于身体宽度+margin，高度很扁（透视压缩）
+        # 受 body_dy 影响：角色上升时阴影缩小变淡，下降时扩大变深
+        shadow_y_base = leg_top + leg_h + body_dy  # 阴影Y基准位置
+        shadow_rx = int(body_draw_w * 1.3)  # 阴影水平半径（比身体宽一些）
+        shadow_ry = max(2, int(leg_h * 0.15))  # 阴影垂直半径（很扁）
+        # 阴影透明度随身体偏移动态变化（跳起时阴影更淡）
+        shadow_alpha_base = 70
+        if body_dy < -2:
+            shadow_alpha_base = max(20, shadow_alpha_base + body_dy * 5)  # 上升→阴影淡
+        
+        for y in range(max(0, shadow_y_base - shadow_ry), min(H, shadow_y_base + shadow_ry + 1)):
+            for x in range(max(0, cx - shadow_rx), min(W, cx + shadow_rx)):
+                dx_s = (x - cx) / max(1, shadow_rx)
+                dy_s = (y - shadow_y_base) / max(1, shadow_ry)
+                dist_sq = dx_s * dx_s + dy_s * dy_s
+                if dist_sq <= 1.0:
+                    # 椭圆内部：中心深、边缘淡（高斯衰减）
+                    falloff = 1.0 - dist_sq
+                    sa = int(shadow_alpha_base * falloff * falloff)
+                    if sa > 3 and canvas[y][x][3] == 0:
+                        # 仅在空白区域绘制阴影（不覆盖角色像素）
+                        canvas[y][x] = (0, 0, 0, sa)
+        
         return canvas
 
     def _apply_flash(self, frame, intensity):
