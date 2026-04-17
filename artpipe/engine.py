@@ -2,7 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
-v0.3.18: 感知色彩质量修正(Rec.709亮度加权饱和度上限+最小色距+黄金角度展开)
+v0.3.19: 情感化眼部表情(动画状态联动)+手臂渐变着色+动漫风副高光
 """
 import hashlib
 import json
@@ -908,6 +908,9 @@ class CharacterEngine:
         body_light = (min(255, body_color[0]+20), min(255, body_color[1]+20), min(255, body_color[2]+20))
         accent_dark = (max(0, accent[0]-25), max(0, accent[1]-25), max(0, accent[2]-25))
         accent_light = (min(255, accent[0]+30), min(255, accent[1]+30), min(255, accent[2]+30))
+        # v0.3.19: 肤色分层 — 手臂渐变着色用
+        skin_dark = (max(0, skin[0]-25), max(0, skin[1]-25), max(0, skin[2]-25))
+        skin_light = (min(255, skin[0]+15), min(255, skin[1]+15), min(255, skin[2]+15))
         
         # 根据类型调整比例（v0.3.7: 应用体型比例差异化）
         head_r = int(H * type_cfg.get("head_ratio", 0.19) / 2)
@@ -968,21 +971,38 @@ class CharacterEngine:
                             if dy == brow_y - brow_curve:
                                 canvas[y][x] = (max(0, skin[0]-50), max(0, skin[1]-50), max(0, skin[2]-50), 255)
                     
-                    # 眼睛（v0.3.2: 虹膜+瞳孔+高光三层结构）
+                    # 眼睛（v0.3.19: 情感化眼部表情 — 根据动画状态调整睁眼程度）
+                    # hurt/jump: 睁大(惊讶) | attack/defend: 眯眼(专注) | die: 半闭(虚弱)
+                    # cast: 微睁(施法专注) | 其他(idle/walk/run): 正常
                     eye_zone_y = abs(dy) <= ps
+                    if anim in ("hurt", "jump"):
+                        eye_zone_y = abs(dy) <= ps + 1  # 惊讶：睁大眼
+                    elif anim in ("attack", "defend"):
+                        eye_zone_y = abs(dy) <= max(0, ps - 1)  # 专注：眯眼
+                    elif anim == "die":
+                        eye_zone_y = dy <= 0 and abs(dy) <= ps  # 虚弱：只画上半
                     eye_zone_x = abs(dx) >= head_r//3 and abs(dx) <= head_r//2
                     if eye_zone_y and eye_zone_x:
-                        # 虹膜：使用accent颜色的暗色调
+                        # 虹膜
                         iris_color = (min(255, accent[0]+30), min(255, accent[1]+30), min(255, accent[2]+30))
                         canvas[y][x] = (*iris_color, 255)
-                        # 瞳孔：眼睛中心偏内的一格（缩小dx范围）
-                        if abs(dx) >= head_r//3 + max(1, ps//2) and abs(dx) <= head_r//2 - max(1, ps//2):
-                            canvas[y][x] = (15, 15, 25, 255)
-                    # 眼睛高光（右上方小白点，让眼睛有神）
-                    if dy == -ps//2 and dx == head_r//3 + max(1, ps//2):
-                        canvas[y][x] = (255, 255, 255, 255)
-                    if dy == -ps//2 and dx == -(head_r//3 + max(1, ps//2)):
-                        canvas[y][x] = (255, 255, 255, 255)
+                        # 瞳孔（受惊时不画瞳孔=大虹膜=惊恐效果）
+                        if anim != "hurt":
+                            if abs(dx) >= head_r//3 + max(1, ps//2) and abs(dx) <= head_r//2 - max(1, ps//2):
+                                canvas[y][x] = (15, 15, 25, 255)
+                    # 主高光（右上方小白点，死亡时不画=失去神采）
+                    if anim != "die":
+                        if dy == -ps//2 and dx == head_r//3 + max(1, ps//2):
+                            canvas[y][x] = (255, 255, 255, 255)
+                        if dy == -ps//2 and dx == -(head_r//3 + max(1, ps//2)):
+                            canvas[y][x] = (255, 255, 255, 255)
+                    # v0.3.19: 副高光 — 动漫风第二高光点（主高光内侧下方，增加水润感）
+                    # 只在正常/惊讶/施法时显示，眯眼和半闭时不画
+                    if anim not in ("attack", "defend", "die"):
+                        sub_y = max(0, -ps//2 + 1)
+                        sub_dx = head_r//3 + max(1, ps//2) - 1
+                        if dy == sub_y and abs(dx) == sub_dx and canvas[y][x][3] > 0:
+                            canvas[y][x] = (210, 225, 255, 255)  # 淡蓝白副高光
                     
                     # 鼻子（v0.3.7: 微小像素鼻子，增加面部立体感）
                     if dy == 1 and dx == 0:
@@ -1371,20 +1391,37 @@ class CharacterEngine:
                 if 0 <= y < H and canvas[y][x][3] > 0:
                     canvas[y][x] = (*shoe_color, 255)
         
-        # ---- 绘制手臂（v0.3.7: arm_ratio差异化手臂粗细） ----
+        # ---- 绘制手臂（v0.3.19: 纵向渐变着色增加立体感） ----
         arm_w = max(ps * 2, int(leg_w * arm_ratio))
-        # 左臂（带偏移）
+        arm_top_y = body_top + ps
+        arm_bot_y = body_bot - ps
+        arm_h = max(1, arm_bot_y - arm_top_y)
+        # 左臂（带偏移 + 纵向渐变：顶部受光偏亮，底部阴影偏暗）
         ladx, lady = pose["left_arm_dx"], pose["left_arm_dy"]
-        for y in range(body_top + ps + lady, min(H, body_bot - ps + lady)):
+        for y in range(arm_top_y + lady, min(H, arm_bot_y + lady)):
+            arm_t = (y - arm_top_y - lady) / max(1, arm_h - 1)  # 0=顶 1=底
+            if arm_t < 0.3:
+                arm_c = skin_light
+            elif arm_t > 0.7:
+                arm_c = skin_dark
+            else:
+                arm_c = skin
             for x in range(max(0, cx - body_w//2 - arm_w + ladx), min(W, cx - body_w//2 + ladx)):
                 if 0 <= y < H:
-                    canvas[y][x] = (*skin, 255)
-        # 右臂（带偏移，武器侧）
+                    canvas[y][x] = (*arm_c, 255)
+        # 右臂（带偏移 + 纵向渐变，武器侧）
         radx, rady = pose["right_arm_dx"], pose["right_arm_dy"]
-        for y in range(body_top + ps + rady, min(H, body_bot - ps + rady)):
+        for y in range(arm_top_y + rady, min(H, arm_bot_y + rady)):
+            arm_t = (y - arm_top_y - rady) / max(1, arm_h - 1)  # 0=顶 1=底
+            if arm_t < 0.3:
+                arm_c = skin_light
+            elif arm_t > 0.7:
+                arm_c = skin_dark
+            else:
+                arm_c = skin
             for x in range(cx + body_w//2 + radx, min(W, cx + body_w//2 + arm_w + radx)):
                 if 0 <= y < H:
-                    canvas[y][x] = (*skin, 255)
+                    canvas[y][x] = (*arm_c, 255)
         
         # ---- 类型专属配件 ----
         # 战士：盾牌
