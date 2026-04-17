@@ -1611,6 +1611,36 @@ class CharacterEngine:
                 if abs(x - cx) <= ps:
                     canvas[y][x] = (*accent_light, 255)
         
+        # v0.3.29: 服装高光带（Specular Band）— 胸部区域横向高光条纹增强材质质感
+        # 原理：真实服装在光照下，面料凸起处（胸部/肩部）会形成一道水平高光带，
+        #       这是布料在主光源下的镜面反射。这条高光带是区分"画了颜色"和"穿了衣服"的关键视觉元素
+        # 实现：在身体上部1/3区域，横向画一道偏暖的高光条纹（宽度约身体60%）
+        #       条纹纵向有高斯衰减（中心最亮，上下渐淡），颜色偏暖模拟布料漫反射
+        spec_band_cy = body_top + int(body_draw_h * 0.3)  # 高光带中心：身体上部30%处
+        spec_band_h = max(2, int(body_draw_h * 0.08))  # 高光带纵向半径（很窄）
+        spec_band_hw = int(_contour_hw * 0.65)  # 高光带横向半宽（身体宽度的65%）
+        for y in range(max(0, spec_band_cy - spec_band_h - 1), min(H, spec_band_cy + spec_band_h + 2)):
+            for x in range(max(0, cx - spec_band_hw), min(W, cx + spec_band_hw)):
+                r, g, b, a = canvas[y][x]
+                if a == 0:
+                    continue
+                # 纵向高斯衰减
+                dy_sb = abs(y - spec_band_cy)
+                gauss = max(0, 1.0 - (dy_sb * dy_sb) / max(1, spec_band_h * spec_band_h))
+                # 横向也做轻微衰减（中心最亮，两侧渐淡）
+                dx_sb = abs(x - cx)
+                h_fade = max(0, 1.0 - dx_sb / max(1, spec_band_hw))
+                intensity = gauss * h_fade
+                if intensity > 0.15:
+                    # 暖色高光：偏黄白（布料漫反射特征色）
+                    boost = int(18 * intensity)
+                    canvas[y][x] = (
+                        min(255, r + boost + 4),    # 红色额外+4偏暖
+                        min(255, g + boost + 2),    # 绿色微增
+                        min(255, b + max(0, boost - 3)),  # 蓝色少增（偏暖）
+                        a
+                    )
+        
         # v0.3.27: 恢复原始cx — 腿部使用无偏移的中心保持地面锚定
         # （腿已经有自己的ldx/rdx偏移，不需要body_dx影响）
         if body_dx != 0:
@@ -2308,18 +2338,51 @@ class CharacterEngine:
                         if 0 <= y < H and 0 <= x < W:
                             canvas[y][x] = (100, 70, 40, 255)  # 暗色音孔
         
-        # ---- 描边（v0.3.4: 非破坏性8方向描边，保留角色细节） ----
+        # ---- 描边（v0.3.29: 深度加权描边 — 底部粗顶部细，增强空间层次感） ----
+        # 原理：像素美术最佳实践中，角色底部（脚/腿）比顶部（头/发）更靠近地面，
+        #       用更粗的描边模拟"近大远小"的透视效果，让角色在复杂背景下更有空间感
+        # 实现：上半身用标准1px描边，下半身用2px描边（检查更大的邻域）
         if outline:
+            # 构建不透明像素掩码（加速查找）
+            opaque = [[canvas[y][x][3] > 0 for x in range(W)] for y in range(H)]
             outline_layer = [[False]*W for _ in range(H)]
+            
             for y in range(H):
+                # 深度系数：y越大（越靠近底部）→ 描边越粗
+                # 使用 smoothstep 平滑过渡，避免突变分界线
+                depth_t = y / max(1, H)  # 0=顶部 1=底部
+                # 上半身(0-55%): 仅1px标准描边
+                # 过渡区(55-75%): 混合区域
+                # 下半身(75-100%): 扩展到2px描边
+                if depth_t < 0.55:
+                    search_range = 1
+                elif depth_t < 0.75:
+                    _st = (depth_t - 0.55) / 0.20
+                    _st = _st * _st * (3 - 2 * _st)  # smoothstep
+                    search_range = 1 if _st < 0.5 else 2
+                else:
+                    search_range = 2
+                
                 for x in range(W):
-                    if canvas[y][x][3] == 0:  # 空白像素
-                        # 检查8方向是否有角色像素，若有则在空白处画描边
-                        for dx2, dy2 in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
+                    if opaque[y][x]:  # 已有不透明像素，跳过
+                        continue
+                    # 根据深度检查不同范围
+                    found = False
+                    for dx2, dy2 in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
+                        nx, ny = x+dx2, y+dy2
+                        if 0 <= nx < W and 0 <= ny < H and opaque[ny][nx]:
+                            found = True
+                            break
+                    # 下半身额外检查2px距离的邻居
+                    if not found and search_range >= 2:
+                        for dx2, dy2 in [(-2,0),(2,0),(0,-2),(0,2),(-2,-1),(-2,1),(2,-1),(2,1),(-1,-2),(1,-2),(-1,2),(1,2)]:
                             nx, ny = x+dx2, y+dy2
-                            if 0 <= nx < W and 0 <= ny < H and canvas[ny][nx][3] > 0:
-                                outline_layer[y][x] = True
+                            if 0 <= nx < W and 0 <= ny < H and opaque[ny][nx]:
+                                found = True
                                 break
+                    if found:
+                        outline_layer[y][x] = True
+            
             for y in range(H):
                 for x in range(W):
                     if outline_layer[y][x]:
