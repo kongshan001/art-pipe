@@ -1111,14 +1111,23 @@ class CharacterEngine:
         
         # v0.3.27: 上半身水平中心 — 受body_dx影响（头、躯干、手臂随重心横移）
         torso_cx = cx + body_dx
-        # 头部位置：仅受 head_dy 影响，水平跟随躯干
-        head_cy = cy - body_h // 2 - head_r + 2 + head_dy
         # 身体位置：基础位置 + body_dy 独立偏移（不再跟随头部head_dy）
         body_top_base = cy - body_h // 2 + 2 + 1  # 颈部基准位置
         body_top = body_top_base + body_dy
-        # v0.3.25: body_bot 使用 body_draw_h（受 squash & stretch 纵向缩放影响）
+        # v0.3.32: squash & stretch 肢体补偿 — 身体纵向缩放时，保持腿部地面锚定
+        # 无补偿时 body_top 固定，body_bot 随 body_draw_h 变化推动腿部移位
+        # 补偿后 body_bot 保持不变，body_top 反向调整让身体向上/下伸缩
+        # 效果：stretch 时头部上升（拉伸感），squash 时头部下沉（压缩感），腿部始终着地
+        delta_h = body_draw_h - body_h  # 缩放引起的身高变化量
+        body_top = body_top - delta_h  # 反向偏移：stretch时body_top上移，squash时下移
         body_bot = body_top + body_draw_h
         leg_top = body_bot + 1
+        # 头部位置：仅受 head_dy 影响，水平跟随躯干
+        # v0.3.32: head_cy 跟随 body_top 变化，squash时头下沉，stretch时头上升
+        # 原始公式 head_cy = cy - body_h//2 - head_r + 2 + head_dy
+        # body_top = cy - body_h//2 + 3 + body_dy - delta_h
+        # 所以 head_cy = body_top - head_r - 1 + head_dy（保持原始偏移关系）
+        head_cy = body_top - head_r - 1 + head_dy
         
         # v0.3.27: 应用 body_dx 到 cx — 上半身（头/躯干/手臂/配件）使用偏移后的中心
         # 腿部将在稍后恢复原始cx以保持地面锚定
@@ -2282,46 +2291,185 @@ class CharacterEngine:
             tip_x = weapon_base_x + tip_dx
             tip_y = weapon_base_y + tip_dy
             
-            # Bresenham画线（从base到tip）
-            x0, y0 = weapon_base_x, weapon_base_y
-            x1, y1 = tip_x, min(H-1, tip_y)
-            dx_w = abs(x1 - x0)
-            dy_w = abs(y1 - y0)
-            sx = 1 if x0 < x1 else -1
-            sy = 1 if y0 < y1 else -1
-            err = dx_w - dy_w
-            px_count = 0
-            while True:
-                # 在武器路径上画像素
-                if 0 <= y0 < H and 0 <= x0 < W:
-                    canvas[y0][x0] = (200, 200, 210, 255)
-                    if weapon == "sword" and x0+1 < W:
-                        canvas[y0][x0+1] = (220, 220, 230, 255)
-                px_count += 1
-                if px_count > weapon_len + 2:
-                    break
-                if x0 == x1 and y0 == y1:
-                    break
-                e2 = 2 * err
-                if e2 > -dy_w:
-                    err -= dy_w
-                    x0 += sx
-                if e2 < dx_w:
-                    err += dx_w
-                    y0 += sy
-            
-            # 武器尖端装饰（剑尖/杖头/弓弧）
-            if 0 <= tip_y < H and 0 <= tip_x < W:
-                if weapon == "sword":
-                    canvas[tip_y][min(W-1, tip_x)] = (240, 240, 250, 255)
-                elif weapon == "staff":
-                    # 杖顶宝石
+            # ---- v0.3.32: 武器渲染升级 ----
+            if weapon == "sword":
+                # 剑刃渐变：尖端明亮(240,240,250)→基底暗淡(150,150,165)
+                # 剑脊(中脊): 比刃色更亮的高光线
+                # 剑柄: 棕色护手 + accent色柄缠绕
+                x0, y0 = weapon_base_x, weapon_base_y
+                x1, y1 = tip_x, min(H-1, tip_y)
+                dx_w = abs(x1 - x0)
+                dy_w = abs(y1 - y0)
+                sx = 1 if x0 < x1 else -1
+                sy = 1 if y0 < y1 else -1
+                err = dx_w - dy_w
+                px_count = 0
+                blade_total = max(1, abs(x1 - weapon_base_x) + abs(y1 - weapon_base_y))
+                while True:
+                    if 0 <= y0 < H and 0 <= x0 < W:
+                        # 渐变进度: 0=base(暗), 1=tip(亮)
+                        progress = px_count / max(1, blade_total)
+                        # 剑刃色: 暗端(150,150,165) → 亮端(240,240,250)
+                        blade_r = int(150 + progress * 90)
+                        blade_g = int(150 + progress * 90)
+                        blade_b = int(165 + progress * 85)
+                        canvas[y0][x0] = (blade_r, blade_g, blade_b, 255)
+                        # 剑脊高光线（中脊）: 右侧偏移1px更亮的白色线
+                        if x0 + 1 < W and px_count > 1 and px_count < blade_total - 1:
+                            ridge_bright = min(255, blade_r + 30)
+                            canvas[y0][x0 + 1] = (ridge_bright, ridge_bright, min(255, blade_b + 25), 255)
+                    px_count += 1
+                    if px_count > blade_total + 2:
+                        break
+                    if x0 == x1 and y0 == y1:
+                        break
+                    e2 = 2 * err
+                    if e2 > -dy_w:
+                        err -= dy_w
+                        x0 += sx
+                    if e2 < dx_w:
+                        err += dx_w
+                        y0 += sy
+                # 剑柄护手(十字格): 在base位置画2px宽的横线
+                guard_y = weapon_base_y - 1
+                for gx_off in range(-2, 3):
+                    guard_x = weapon_base_x + gx_off
+                    if 0 <= guard_y < H and 0 <= guard_x < W:
+                        canvas[guard_y][guard_x] = (160, 140, 80, 255)  # 金色护手
+                # 剑柄缠绕: accent色
+                for h_off in range(1, min(3, H - weapon_base_y)):
+                    h_y = weapon_base_y - 2 - h_off
+                    if 0 <= h_y < H and 0 <= weapon_base_x < W:
+                        canvas[h_y][weapon_base_x] = (*accent, 255)
+                # 剑尖
+                if 0 <= tip_y < H and 0 <= tip_x < W:
+                    canvas[tip_y][min(W-1, tip_x)] = (250, 250, 255, 255)
+                    
+            elif weapon == "staff":
+                # 法杖: 棕色杖身 + 符文雕刻(交替亮点) + 杖顶宝石
+                x0, y0 = weapon_base_x, weapon_base_y
+                x1, y1 = tip_x, min(H-1, tip_y)
+                dx_w = abs(x1 - x0)
+                dy_w = abs(y1 - y0)
+                sx = 1 if x0 < x1 else -1
+                sy = 1 if y0 < y1 else -1
+                err = dx_w - dy_w
+                px_count = 0
+                staff_total = max(1, abs(x1 - weapon_base_x) + abs(y1 - weapon_base_y))
+                while True:
+                    if 0 <= y0 < H and 0 <= x0 < W:
+                        # 杖身棕色(140,110,70) + 纵向渐变(上深下浅)
+                        progress = px_count / max(1, staff_total)
+                        staff_r = int(120 + progress * 40)
+                        staff_g = int(90 + progress * 30)
+                        staff_b = int(50 + progress * 25)
+                        canvas[y0][x0] = (staff_r, staff_g, staff_b, 255)
+                        # v0.3.32: 符文雕刻 — 每隔3个像素画一个亮色符文点
+                        # 符文使用accent色，亮度交替变化模拟雕刻纹理
+                        if px_count % 3 == 0 and px_count > 2 and px_count < staff_total - 2:
+                            rune_bright = 0.5 + 0.5 * math.sin(px_count * 0.8)
+                            rr = min(255, int(accent[0] * rune_bright + 100 * (1 - rune_bright)))
+                            rg = min(255, int(accent[1] * rune_bright + 80 * (1 - rune_bright)))
+                            rb = min(255, int(accent[2] * rune_bright + 60 * (1 - rune_bright)))
+                            # 符文在杖身左侧偏移1px
+                            rune_x = x0 - 1
+                            if 0 <= rune_x < W:
+                                canvas[y0][rune_x] = (rr, rg, rb, 255)
+                    px_count += 1
+                    if px_count > staff_total + 2:
+                        break
+                    if x0 == x1 and y0 == y1:
+                        break
+                    e2 = 2 * err
+                    if e2 > -dy_w:
+                        err -= dy_w
+                        x0 += sx
+                    if e2 < dx_w:
+                        err += dx_w
+                        y0 += sy
+                # 杖顶宝石（保留原有逻辑，但增加发光外圈）
+                if 0 <= tip_y < H and 0 <= tip_x < W:
                     for gy in range(max(0, tip_y-ps*2), min(H, tip_y+1)):
                         for gx in range(max(0, tip_x-ps), min(W, tip_x+ps+1)):
                             if 0 <= gy < H and 0 <= gx < W:
                                 canvas[gy][gx] = (*accent, 255)
-                elif weapon == "dagger":
-                    canvas[tip_y][min(W-1, tip_x)] = (180, 180, 190, 255)
+                    # 宝石高光点
+                    hl_x, hl_y = tip_x - 1, tip_y - ps + 1
+                    if 0 <= hl_y < H and 0 <= hl_x < W:
+                        canvas[hl_y][hl_x] = (min(255, accent[0]+80), min(255, accent[1]+80), min(255, accent[2]+80), 255)
+                    
+            elif weapon == "bow":
+                # v0.3.32: 弓弧渲染 — 曲线弓身 + 弦线
+                # 弓身: 弯曲的弧线(用sin偏移模拟弯曲), 木色渐变
+                # 弦: 从弓顶到弓底的直线(紧绷)
+                bx0, by0 = weapon_base_x, weapon_base_y  # 弓中部
+                bow_h = weapon_len  # 弓全长
+                bow_curve = max(3, bow_h // 4)  # 弯曲偏移量
+                # 画弓身（从上端到下端，中间向外弯曲）
+                for step in range(bow_h + 1):
+                    t = step / max(1, bow_h)  # 0=上端, 1=下端
+                    by = by0 + step
+                    # sin曲线偏移: 中间最大偏移(弯曲), 两端为0
+                    curve_offset = int(math.sin(t * math.pi) * bow_curve)
+                    bx = bx0 + curve_offset
+                    if 0 <= by < H and 0 <= bx < W:
+                        # 木色渐变: 中间深(120,80,40), 两端浅(160,110,60)
+                        wood_t = abs(t - 0.5) * 2  # 0=中间, 1=端
+                        wr = int(120 + wood_t * 40)
+                        wg = int(80 + wood_t * 30)
+                        wb = int(40 + wood_t * 20)
+                        canvas[by][bx] = (wr, wg, wb, 255)
+                        # 弓身宽度(2px): 内侧稍亮
+                        if bx - 1 >= 0:
+                            canvas[by][bx - 1] = (min(255, wr + 15), min(255, wg + 10), min(255, wb + 8), 255)
+                # 画弦线: 从弓上端到弓下端的直线（紧绷的弦）
+                bow_top_y = by0
+                bow_bot_y = min(H - 1, by0 + bow_h)
+                string_x = bx0  # 弦在弓的直线上（无弯曲偏移）
+                for sy2 in range(bow_top_y, bow_bot_y + 1):
+                    if 0 <= sy2 < H and 0 <= string_x < W:
+                        # 弦色: 浅灰白(200,195,185), 比弓身细
+                        canvas[sy2][string_x] = (200, 195, 185, 200)  # 半透明弦
+                tip_x, tip_y = bx0, bow_bot_y  # 更新tip位置给发光效果
+                    
+            else:  # dagger
+                # 匕首: 短刃 + 渐变(同剑但更短更暗)
+                x0, y0 = weapon_base_x, weapon_base_y
+                x1, y1 = tip_x, min(H-1, tip_y)
+                dx_w = abs(x1 - x0)
+                dy_w = abs(y1 - y0)
+                sx = 1 if x0 < x1 else -1
+                sy = 1 if y0 < y1 else -1
+                err = dx_w - dy_w
+                px_count = 0
+                dag_total = max(1, abs(x1 - weapon_base_x) + abs(y1 - weapon_base_y))
+                while True:
+                    if 0 <= y0 < H and 0 <= x0 < W:
+                        progress = px_count / max(1, dag_total)
+                        # 匕首刃色: 暗端(130,135,140) → 亮端(200,210,220)
+                        dr = int(130 + progress * 70)
+                        dg = int(135 + progress * 75)
+                        db = int(140 + progress * 80)
+                        canvas[y0][x0] = (dr, dg, db, 255)
+                    px_count += 1
+                    if px_count > dag_total + 2:
+                        break
+                    if x0 == x1 and y0 == y1:
+                        break
+                    e2 = 2 * err
+                    if e2 > -dy_w:
+                        err -= dy_w
+                        x0 += sx
+                    if e2 < dx_w:
+                        err += dx_w
+                        y0 += sy
+                # 匕首柄: accent色短柄
+                for h_off in range(2):
+                    h_y = weapon_base_y - 1 - h_off
+                    if 0 <= h_y < H and 0 <= weapon_base_x < W:
+                        canvas[h_y][weapon_base_x] = (*accent, 255)
+                if 0 <= tip_y < H and 0 <= tip_x < W:
+                    canvas[tip_y][min(W-1, tip_x)] = (210, 220, 230, 255)
             
             # v0.3.16: 武器发光效果（加法混合 additive glow）
             # 施法动画时发光最强，其他动画轻微发光
