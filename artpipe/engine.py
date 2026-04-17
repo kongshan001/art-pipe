@@ -2,6 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
+v0.3.21: 头部球面法线渐变着色(模拟球体光照:左上亮右下暗)+AI重试seed轮换(fix:重试时更换seed确保不同结果)
 v0.3.20: 腿部纵向渐变着色(body_light/body_color/body_dark三区)+眉毛情感系统(动画状态联动:攻击V形怒眉/惊讶上扬/死亡下垂/施法微蹙)
 """
 import hashlib
@@ -988,12 +989,34 @@ class CharacterEngine:
         leg_top = body_bot + 1
         
         # ---- 绘制头部 ----
+        # v0.3.21: 头部渐变着色 — 左上亮、右下暗，模拟球体光照
+        # 原理：头部近似球体，根据每个像素相对球心的角度计算明暗
+        # 使用方向性渐变（法线点积光源方向），比flat着色更有3D立体感
         face_type = type_cfg.get("face_type", "plain")
+        # 光源方向（归一化）：左上方 (lx, ly) = (-0.5, -0.7)
+        _light_len = (0.5*0.5 + 0.7*0.7) ** 0.5
+        _lx, _ly = -0.5/_light_len, -0.7/_light_len
         for y in range(max(0, head_cy - head_r), min(H, head_cy + head_r)):
             for x in range(max(0, cx - head_r), min(W, cx + head_r)):
                 dx, dy = x - cx, y - head_cy
-                if dx*dx + dy*dy <= head_r*head_r:
-                    canvas[y][x] = (*skin, 255)
+                dist_sq = dx*dx + dy*dy
+                if dist_sq <= head_r*head_r:
+                    # v0.3.21: 球面法线渐变着色
+                    # 计算法线方向（球面上的法线 = 从球心指向表面的单位向量）
+                    inv_r = 1.0 / max(1, head_r)
+                    nx_n = dx * inv_r
+                    ny_n = dy * inv_r
+                    # 法线点积光源方向 → 光照强度（-1到1）
+                    dot = nx_n * _lx + ny_n * _ly
+                    # 映射到亮度偏移：dot从-1(背光)到1(受光) → 偏移从-18到+15
+                    brightness = int(dot * 16)
+                    head_c = (
+                        min(255, max(0, skin[0] + brightness)),
+                        min(255, max(0, skin[1] + brightness)),
+                        min(255, max(0, skin[2] + brightness)),
+                        255
+                    )
+                    canvas[y][x] = head_c
                     
                     # ---- v0.3.7: 增强面部细节 ----
                     # v0.3.20: 眉毛情感系统 — 动画状态联动眉毛角度

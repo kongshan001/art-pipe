@@ -2,6 +2,7 @@
 ArtPipe AI图像生成客户端 v0.3
 支持 Pollinations.ai (免费) + HuggingFace Inference API (免费) + 可扩展后端
 零外部依赖，纯标准库实现
+v0.3.21: 修复重试seed bug — 重试时轮换seed确保每次生成不同图像
 v0.3.18: 增强版 — 视角约束+体型描述注入+负面提示词扩展+enhance参数
 """
 import base64
@@ -192,6 +193,9 @@ class AIGenerator:
 
             except Exception as e:
                 print(f"[AIGenerator] Attempt {attempt+1}/{retry} failed: {e}")
+
+            # v0.3.21: 重试时更换seed，确保每次重试生成不同图像
+            seed = (seed * 16807 + 12345) % 2147483647
 
             # 限速 + 退避
             if attempt < retry - 1:

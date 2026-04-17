@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ArtPipe API v0.3.0 - AI 2D Game Character Asset Generation
+ArtPipe API v0.3.21 - AI 2D Game Character Asset Generation
 API-First: POST /api/generate → 完整引擎就绪美术资产包
 v0.3 新增: AI图像生成 (render_mode=ai/hybrid)
 v0.3.17: XSS修复(html.escape) + ThreadingHTTPServer并发支持
@@ -54,7 +54,7 @@ class ArtPipeAPI(BaseHTTPRequestHandler):
         if path == "/api/info":
             self._json({
                 "name": "ArtPipe API",
-                "version": "0.3.0",
+                "version": "0.3.21",
                 "description": "AI-Powered 2D Game Character Asset Generation",
                 "render_modes": ["procedural", "ai", "hybrid"],
                 "endpoints": {
@@ -277,7 +277,7 @@ pre { background:#0f3460; padding:24px; border-radius:8px; max-width:700px; over
 h1 { color:#e94560; }
 a { color:#53a8b6; }
 </style></head><body><pre>
-<h1>ArtPipe API v0.3.0</h1>
+<h1>ArtPipe API v0.3.21</h1>
 
 AI-Powered 2D Game Character Asset Generation
 
@@ -341,7 +341,7 @@ def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
     # v0.3.17: ThreadingHTTPServer 支持并发请求
     server = ThreadingHTTPServer(("0.0.0.0", port), ArtPipeAPI)
-    print(f"ArtPipe API v0.3.0 | http://localhost:{port}")
+    print(f"ArtPipe API v0.3.21 | http://localhost:{port}")
     print(f"POST /api/generate  |  prompt -> assets (procedural + AI)")
     try:
         server.serve_forever()
