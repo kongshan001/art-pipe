@@ -484,7 +484,7 @@ class CharacterEngine:
         return result
 
     def _render_all_frames(self, rng, style_cfg, type_cfg, palette, char_type_key="warrior"):
-        """渲染7种动画的帧（v0.3.11: 传入char_type_key用于发型选择）"""
+        """渲染8种动画的帧（v0.3.11: 传入char_type_key用于发型选择）"""
         animations = {}
         
         # v0.3.11: 在所有帧之前一次性选择发型和纹理（保证帧间一致性）
@@ -492,6 +492,23 @@ class CharacterEngine:
         hair_style = hair_pool[rng.int_range(0, len(hair_pool) - 1)]
         texture_patterns = ["solid", "horizontal_stripe", "checkerboard", "diamond", "v_stripe"]
         cloth_texture = texture_patterns[rng.int_range(0, len(texture_patterns) - 1)]
+        
+        # v0.3.13: 在所有帧之前一次性选择配件（修复帧间配件闪烁bug）
+        available_acc = type_cfg.get("accessories", [])
+        chosen_acc = []
+        if available_acc:
+            acc_pool = list(available_acc)
+            for i in range(len(acc_pool) - 1, 0, -1):
+                j = rng.int_range(0, i)
+                acc_pool[i], acc_pool[j] = acc_pool[j], acc_pool[i]
+            roll = rng.next()
+            if roll < 0.70:
+                n_acc = 1
+            elif roll < 0.90:
+                n_acc = 2
+            else:
+                n_acc = 0
+            chosen_acc = acc_pool[:n_acc]
         
         anim_configs = {
             "idle":   {"frames": 4},
@@ -511,7 +528,7 @@ class CharacterEngine:
                 # 计算当前帧的肢体姿态参数
                 pose = self._calc_pose(anim_name, t)
                 # 每帧独立渲染（含肢体偏移）
-                frame = self._render_character(rng, style_cfg, type_cfg, palette, f, anim_name, pose, char_type_key, hair_style, cloth_texture)
+                frame = self._render_character(rng, style_cfg, type_cfg, palette, f, anim_name, pose, char_type_key, hair_style, cloth_texture, chosen_acc)
                 # 后处理：特殊效果
                 if anim_name == "hurt" and int(t * 4) % 2 == 0:
                     # 受击白闪效果
@@ -703,8 +720,8 @@ class CharacterEngine:
         
         return pose
 
-    def _render_character(self, rng, style_cfg, type_cfg, palette, frame_idx, anim, pose=None, char_type_key="warrior", hair_style="short", cloth_texture="solid"):
-        """渲染单帧角色像素数据（v0.3.11: 多发型系统+服装纹理）"""
+    def _render_character(self, rng, style_cfg, type_cfg, palette, frame_idx, anim, pose=None, char_type_key="warrior", hair_style="short", cloth_texture="solid", chosen_acc=None):
+        """渲染单帧角色像素数据（v0.3.13: 配件由外层传入，保证帧间一致性）"""
         W, H = self.CANVAS_W, self.CANVAS_H
         ps = style_cfg["pixel_size"]
         
@@ -720,24 +737,10 @@ class CharacterEngine:
                 "body_scale_x": 1.0,
             }
         
-        # v0.3.9: 根据 seed 随机选择0~2个配件
-        available_acc = type_cfg.get("accessories", [])
-        chosen_acc = []
-        if available_acc:
-            # 洗牌后取前N个（N由seed决定）
-            acc_pool = list(available_acc)
-            for i in range(len(acc_pool) - 1, 0, -1):
-                j = rng.int_range(0, i)
-                acc_pool[i], acc_pool[j] = acc_pool[j], acc_pool[i]
-            # 随机选择0~2个（70%概率选1个，20%选2个，10%不选）
-            roll = rng.next()
-            if roll < 0.70:
-                n_acc = 1
-            elif roll < 0.90:
-                n_acc = 2
-            else:
-                n_acc = 0
-            chosen_acc = acc_pool[:n_acc]
+        # v0.3.13: 配件由 _render_all_frames 在帧循环前一次性选定并传入
+        # 不再在每帧中重新随机选择，避免帧间配件闪烁
+        if chosen_acc is None:
+            chosen_acc = []
         
         # 创建空白画布 (RGBA)
         canvas = [[(0,0,0,0) for _ in range(W)] for _ in range(H)]
@@ -865,18 +868,32 @@ class CharacterEngine:
                             # 普通小嘴
                             if dy == mouth_y and abs(dx) <= head_r//6:
                                 canvas[y][x] = (180, 80, 80, 255)
-                    
-                    # 腮红（v0.3.7: cute/gentle类型增加淡粉色腮红）
-                    if (face_type == "cute" or face_type == "gentle"):
-                        blush_y = head_r//4
-                        if dy == blush_y and (abs(dx) == head_r//2 + 1 or abs(dx) == head_r//2 + 2):
-                            blush_color = (min(255, skin[0]+40), min(255, skin[1]-10), min(255, skin[2]-20))
-                            if canvas[y][x][3] > 0:
-                                old_r, old_g, old_b, old_a = canvas[y][x]
-                                canvas[y][x] = (
-                                    (old_r + blush_color[0]) // 2,
-                                    (old_g + blush_color[1]) // 2,
-                                    (old_b + blush_color[2]) // 2,
+        
+        # ---- v0.3.13: 腮红渲染（独立通道，带距离衰减的柔滑圆形腮红） ----
+        if face_type == "cute" or face_type == "gentle":
+            blush_y_offset = head_r // 4
+            blush_x_offset = head_r // 3
+            blush_r = max(1, head_r // 5)
+            blush_center_y = head_cy + blush_y_offset
+            for blush_side in [-1, 1]:
+                blush_center_x = cx + blush_side * blush_x_offset
+                for by in range(max(0, blush_center_y - blush_r), min(H, blush_center_y + blush_r + 1)):
+                    for bx in range(max(0, blush_center_x - blush_r), min(W, blush_center_x + blush_r + 1)):
+                        bdx = bx - blush_center_x
+                        bdy = by - blush_center_y
+                        dist_sq = bdx*bdx + bdy*bdy
+                        if dist_sq <= blush_r * blush_r:
+                            if 0 <= by < H and 0 <= bx < W and canvas[by][bx][3] > 0:
+                                # 距离衰减：中心最浓，边缘渐淡
+                                intensity = 1.0 - (dist_sq / (blush_r * blush_r + 1))
+                                blush_r_comp = min(255, int(skin[0] + 50 * intensity))
+                                blush_g_comp = max(0, int(skin[1] - 15 * intensity))
+                                blush_b_comp = max(0, int(skin[2] - 25 * intensity))
+                                old_r, old_g, old_b, old_a = canvas[by][bx]
+                                canvas[by][bx] = (
+                                    (old_r + blush_r_comp) // 2,
+                                    (old_g + blush_g_comp) // 2,
+                                    (old_b + blush_b_comp) // 2,
                                     old_a
                                 )
         
@@ -1047,6 +1064,30 @@ class CharacterEngine:
                 for x in range(max(0, cx - head_r//3), min(W, cx + head_r//3)):
                     if 0 <= part_y < H:
                         canvas[part_y][x] = (*hair_light, 255)
+        
+        # ---- v0.3.13: 绘制耳朵 ----
+        # 耳朵位于头部两侧中部，为肤色椭圆（2x3像素）
+        # 被头发遮挡时不绘制（检查是否有头发像素）
+        ear_w = max(1, head_r // 4)
+        ear_h = max(2, head_r // 2)
+        ear_y = head_cy  # 耳朵位于头部垂直中心
+        for side in [-1, 1]:  # 左耳、右耳
+            ear_cx = cx + side * (head_r + ear_w)
+            for ey in range(max(0, ear_y - ear_h // 2), min(H, ear_y + ear_h // 2 + 1)):
+                for ex in range(max(0, ear_cx - ear_w // 2), min(W, ear_cx + ear_w // 2 + 1)):
+                    # 椭圆检测
+                    edx = ex - ear_cx
+                    edy = ey - ear_y
+                    if (edx * edx * (ear_h * ear_h) + edy * edy * (ear_w * ear_w)
+                            <= ear_w * ear_w * ear_h * ear_h):
+                        # 检查是否被头发遮挡
+                        if 0 <= ey < H and 0 <= ex < W and canvas[ey][ex][3] == 0:
+                            # 耳朵外轮廓（略深肤色）
+                            ear_edge = (abs(edx) >= ear_w // 2 or abs(edy) >= ear_h // 2)
+                            if ear_edge:
+                                canvas[ey][ex] = (max(0, skin[0]-30), max(0, skin[1]-30), max(0, skin[2]-20), 255)
+                            else:
+                                canvas[ey][ex] = (*skin, 255)
         
         # ---- 绘制身体（v0.3.11: 颜色分层+服装纹理图案渲染） ----
         # 纹理由 _render_all_frames 在帧循环前一次性选定
