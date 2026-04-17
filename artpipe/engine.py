@@ -700,6 +700,7 @@ class CharacterEngine:
             "body_dy": 0, "head_dy": 0,
             "weapon_angle": 0,
             "body_scale_x": 1.0,  # v0.3.8: 胸腔横向缩放（呼吸）
+            "body_scale_y": 1.0,  # v0.3.25: 纵向缩放（squash & stretch）
         }
         
         if anim == "idle":
@@ -755,6 +756,9 @@ class CharacterEngine:
                 pose["right_leg_dx"] = 1
                 pose["left_leg_dy"] = int(squat * 1)
                 pose["right_leg_dy"] = int(squat * 1)
+                # v0.3.25: 蹲下蓄力squash（横向膨胀+纵向压缩，蓄力感）
+                pose["body_scale_x"] = 1.0 + 0.10 * squat
+                pose["body_scale_y"] = 1.0 - 0.08 * squat
             elif t < 0.35:
                 # 起跳上升（ease-out快速弹出身体）
                 raw = (t - 0.15) / 0.2  # 0→1
@@ -765,6 +769,11 @@ class CharacterEngine:
                 pose["right_arm_dy"] = -int(lift * 3)
                 pose["left_leg_dy"] = -int(lift * 2)
                 pose["right_leg_dy"] = -int(lift * 2)
+                # v0.3.25: 起跳stretch（纵向拉长+横向收窄，表现爆发力）
+                if raw < 0.5:
+                    stretch_strength = raw * 2  # 0→1 渐强
+                    pose["body_scale_x"] = 1.0 - 0.08 * stretch_strength
+                    pose["body_scale_y"] = 1.0 + 0.10 * stretch_strength
             elif t < 0.65:
                 # 滞空最高点（展开姿态）
                 pose["body_dy"] = -8
@@ -790,6 +799,17 @@ class CharacterEngine:
                     pose["head_dy"] = int(cushion * 1)
                     pose["left_leg_dy"] = int(cushion * 1)
                     pose["right_leg_dy"] = int(cushion * 1)
+                    # v0.3.25: 着地squash（横向膨胀+纵向压缩，体积守恒）
+                    # 经典动画原理：冲击瞬间squash，然后快速恢复
+                    # squash强度随缓冲衰减：刚着地最强，逐渐恢复
+                    squash_decay = 1.0 - cushion * 0.7  # 1.0→0.3
+                    pose["body_scale_x"] = 1.0 + 0.12 * squash_decay
+                    pose["body_scale_y"] = 1.0 - 0.10 * squash_decay
+                elif fall > 0.5:
+                    # v0.3.25: 下落中段stretch（纵向拉长+横向收窄，表现速度感）
+                    stretch_t = (fall - 0.5) / 0.2  # 0→1
+                    pose["body_scale_x"] = 1.0 - 0.06 * stretch_t
+                    pose["body_scale_y"] = 1.0 + 0.08 * stretch_t
         
         elif anim == "attack":
             # 攻击：右臂（武器侧）前伸 → 收回（v0.3.6: 身体前冲+头部后仰分离）
@@ -941,6 +961,7 @@ class CharacterEngine:
                 "body_dy": 0, "head_dy": 0,
                 "weapon_angle": 0,
                 "body_scale_x": 1.0,
+                "body_scale_y": 1.0,
             }
         
         # v0.3.13: 配件由 _render_all_frames 在帧循环前一次性选定并传入
@@ -958,14 +979,26 @@ class CharacterEngine:
         hair_color = palette[3]
         outline = style_cfg.get("outline_color")
         
-        # v0.3.9: 预计算颜色分层 — 深色/中间色/高光
-        body_dark = (max(0, body_color[0]-30), max(0, body_color[1]-30), max(0, body_color[2]-30))
-        body_light = (min(255, body_color[0]+20), min(255, body_color[1]+20), min(255, body_color[2]+20))
-        accent_dark = (max(0, accent[0]-25), max(0, accent[1]-25), max(0, accent[2]-25))
-        accent_light = (min(255, accent[0]+30), min(255, accent[1]+30), min(255, accent[2]+30))
-        # v0.3.19: 肤色分层 — 手臂渐变着色用
-        skin_dark = (max(0, skin[0]-25), max(0, skin[1]-25), max(0, skin[2]-25))
-        skin_light = (min(255, skin[0]+15), min(255, skin[1]+15), min(255, skin[2]+15))
+        # v0.3.9→v0.3.25: 颜色分层 — 使用HSV色相偏移(Hue Shift)技术
+        # 像素美术最佳实践：高光偏暖色(红/黄通道微增，蓝通道微减)，
+        #                     阴影偏冷色(蓝通道微增，红/黄通道微减)
+        # 这比简单的RGB加减法更真实——真实光照中，直射光偏暖，散射光/阴影偏冷
+        # 参考技术：Hue Shifting / Color Temperature in Pixel Art (slynyrd, 2024)
+        def _warm_shift(color, amount):
+            """色相偏暖：模拟直射光（微增红+黄，微减蓝）"""
+            r, g, b = color
+            return (min(255, r + amount + 3), min(255, g + amount + 1), min(255, b + max(0, amount - 4)))
+        def _cool_shift(color, amount):
+            """色相偏冷：模拟阴影散射光（微增蓝，微减红）"""
+            r, g, b = color
+            return (max(0, r - int(amount * 0.4)), max(0, g - int(amount * 0.2)), max(0, b - amount))
+        body_dark = _cool_shift(body_color, 30)    # 阴影→偏冷蓝
+        body_light = _warm_shift(body_color, 20)    # 高光→偏暖黄
+        accent_dark = _cool_shift(accent, 25)
+        accent_light = _warm_shift(accent, 30)
+        # v0.3.19→v0.3.25: 肤色分层 — 同样使用色相偏移
+        skin_dark = _cool_shift(skin, 25)
+        skin_light = _warm_shift(skin, 15)
         
         # 根据类型调整比例（v0.3.7: 应用体型比例差异化）
         head_r = int(H * type_cfg.get("head_ratio", 0.19) / 2)
@@ -976,6 +1009,8 @@ class CharacterEngine:
         body_h = int(H * 0.35 * body_ratio)
         # v0.3.8: 呼吸缩放宽度（仅影响身体矩形绘制，不影响肢体定位）
         body_draw_w = int(body_w * pose.get("body_scale_x", 1.0))
+        # v0.3.25: squash & stretch — 纵向缩放影响身体高度
+        body_draw_h = int(body_h * pose.get("body_scale_y", 1.0))
         leg_h = int(H * 0.2 * leg_ratio)
         
         # 应用 body_dy/head_dy 独立偏移（v0.3.6修复：body_dy 真正影响躯干位置）
@@ -987,7 +1022,8 @@ class CharacterEngine:
         # 身体位置：基础位置 + body_dy 独立偏移（不再跟随头部head_dy）
         body_top_base = cy - body_h // 2 + 2 + 1  # 颈部基准位置
         body_top = body_top_base + body_dy
-        body_bot = body_top + body_h
+        # v0.3.25: body_bot 使用 body_draw_h（受 squash & stretch 纵向缩放影响）
+        body_bot = body_top + body_draw_h
         leg_top = body_bot + 1
         
         # ---- 绘制头部 ----
@@ -2229,13 +2265,16 @@ class CharacterEngine:
         #       调色板色阶上，保留光照方向但消除过度平滑。
         # 方法：对每个不透明像素，找到其在调色板扩展色阶（亮/中/暗三层）中最近的匹配色
         if palette and len(palette) >= 4:
-            # 构建扩展调色板：每个调色板色生成3个亮度层（亮+15, 原色, 暗-20）
-            # 加上描边色和黑色（阴影用），共约3*5+2=17色
+            # 构建扩展调色板：每个调色板色生成3个亮度层
+            # v0.3.25: 使用色相偏移而非均匀RGB偏移，与渲染颜色分层一致
+            # 亮色层偏暖（模拟高光直射光），暗色层偏冷（模拟阴影散射光）
             snap_palette = []
             for pc in palette:
                 snap_palette.append(pc)  # 原色
-                snap_palette.append((max(0, pc[0]-20), max(0, pc[1]-20), max(0, pc[2]-20)))  # 暗色
-                snap_palette.append((min(255, pc[0]+15), min(255, pc[1]+15), min(255, pc[2]+15)))  # 亮色
+                # 暗色层：偏冷（蓝增，红减）— 模拟阴影
+                snap_palette.append((max(0, pc[0] - int(20 * 0.4)), max(0, pc[1] - int(20 * 0.2)), max(0, pc[2] - 20)))
+                # 亮色层：偏暖（红增，蓝减）— 模拟高光
+                snap_palette.append((min(255, pc[0] + 15 + 3), min(255, pc[1] + 15 + 1), min(255, pc[2] + max(0, 15 - 4))))
             # 添加辅助色
             snap_palette.append((0, 0, 0))  # 纯黑（阴影/描边）
             if outline:
