@@ -35,7 +35,41 @@ from artpipe.exporter import AssetExporter
 
 
 # ---- In-memory store for generated assets (production: use Redis/DB) ----
-asset_store = {}
+# v0.3.33: LRU淘汰机制 — OrderedDict + max_size防止内存无限增长
+from collections import OrderedDict
+
+class LRUCache:
+    """零依赖LRU缓存（基于OrderedDict实现）"""
+    def __init__(self, max_size=100):
+        self._cache = OrderedDict()
+        self._max_size = max_size
+    
+    def __setitem__(self, key, value):
+        if key in self._cache:
+            self._cache.move_to_end(key)  # 已存在则移到末尾(最近使用)
+        self._cache[key] = value
+        # 超出容量时淘汰最老的(最久未使用)
+        while len(self._cache) > self._max_size:
+            self._cache.popitem(last=False)
+    
+    def __getitem__(self, key):
+        value = self._cache[key]
+        self._cache.move_to_end(key)  # 命中时移到末尾
+        return value
+    
+    def __contains__(self, key):
+        return key in self._cache
+    
+    def get(self, key, default=None):
+        if key in self._cache:
+            return self[key]  # 触发LRU排序
+        return default
+    
+    def __len__(self):
+        return len(self._cache)
+
+ASSET_STORE_MAX = 100  # 最多缓存100个角色资产
+asset_store = LRUCache(ASSET_STORE_MAX)
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -54,7 +88,7 @@ class ArtPipeAPI(BaseHTTPRequestHandler):
         if path == "/api/info":
             self._json({
                 "name": "ArtPipe API",
-                "version": "0.3.21",
+                "version": "0.3.33",
                 "description": "AI-Powered 2D Game Character Asset Generation",
                 "render_modes": ["procedural", "ai", "hybrid"],
                 "endpoints": {

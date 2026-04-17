@@ -364,6 +364,8 @@ class CharacterEngine:
                 result["ai_image"]["thumbnail_b64"] = ai_result["thumbnail_b64"]
         
         # 附加各动画的帧数据（v0.3.3: 逐动画FPS，不同动画速度不同）
+        # v0.3.33: 变量帧时长 — 关键帧(蓄力/冲击)保持更长，过渡帧更短
+        #   遵循迪士尼动画12原则的"时间分配"(Timing)原则
         anim_fps = {
             "idle": 4,    # 呼吸：慢节奏
             "walk": 10,   # 步行：中速
@@ -375,18 +377,47 @@ class CharacterEngine:
             "die": 6,     # 死亡：慢速倒下
             "cast": 8,    # 施法：中速蓄力+快速释放（v0.3.16）
         }
+        # v0.3.33: 变量帧时长系数 — 每帧相对基准时长的倍率
+        # 系数>1表示该帧停留更久(强调/蓄力/冲击帧)，<1表示快速过渡
+        # 设计原则: anticipation帧×1.5~2.0(蓄力感), impact/release帧×0.7~0.8(速度感), 其他帧×1.0
+        anim_frame_timing = {
+            "idle":   [1.2, 1.0, 1.2, 1.0],       # 呼吸: 吸气/呼气强调帧稍长
+            "walk":   [1.0, 1.0, 1.1, 1.0, 1.0, 1.1], # 踏地帧(2,5)稍长
+            "run":    [1.0, 0.9, 1.1, 1.0, 0.9, 1.1],  # 踏地帧(2,5)稍长,腾空帧(1,4)更快
+            "jump":   [1.5, 0.8, 1.0, 0.9, 0.9, 1.8],  # 蹲蓄力×1.5, 起跳快×0.8, 落地强调×1.8
+            "attack": [1.6, 0.7, 0.7, 1.5, 0.8, 1.0],  # 蓄力×1.6, 挥出快×0.7, 冲击帧×1.5
+            "defend": [1.2, 1.3, 1.0, 1.0, 1.3],        # 蓄力准备×1.2, 稳守帧×1.3
+            "hurt":   [0.7, 1.5, 1.2],                    # 冲击快×0.7, 后仰强调×1.5
+            "die":    [1.0, 1.0, 1.2, 1.5, 2.0, 2.5],    # 渐慢: 后期帧越来越长(1→2.5)
+            "cast":   [1.4, 1.2, 1.0, 0.7, 0.8, 1.0, 1.3], # 蓄力慢×1.4, 释放快×0.7, 恢复×1.3
+        }
         for anim_name, frames in animations.items():
+            fps = anim_fps.get(anim_name, 8)
+            base_ms = int(1000 / fps)  # 基准帧时长(ms)
+            timing = anim_frame_timing.get(anim_name, [1.0] * len(frames))
+            # 计算每帧时长(ms)
+            frame_durations = []
+            for i in range(len(frames)):
+                t_factor = timing[i] if i < len(timing) else 1.0
+                frame_durations.append(int(base_ms * t_factor))
             result["animations"][anim_name] = {
                 "frame_count": len(frames),
-                "fps": anim_fps.get(anim_name, 8),
+                "fps": fps,
                 "loop": anim_name != "die",
+                "frame_durations_ms": frame_durations,  # v0.3.33: 变量帧时长
             }
         
         # SpriteSheet PNG
         all_frames = []
         frame_map = {}
+        # v0.3.33: 从animations结果提取帧时长用于frame_map
+        anim_durations = {name: info["frame_durations_ms"] for name, info in result["animations"].items()}
         for anim_name, frames in animations.items():
-            frame_map[anim_name] = {"start": len(all_frames), "count": len(frames)}
+            frame_map[anim_name] = {
+                "start": len(all_frames),
+                "count": len(frames),
+                "frame_durations_ms": anim_durations.get(anim_name, []),  # v0.3.33
+            }
             all_frames.extend(frames)
         
         cols = 8
@@ -1551,6 +1582,59 @@ class CharacterEngine:
                 for x in range(max(0, cx - head_r//3), min(W, cx + head_r//3)):
                     if 0 <= part_y < H:
                         canvas[part_y][x] = (*hair_light, 255)
+        
+        # ---- v0.3.33: 发型投射阴影 — 头发在脸部/额头的投影增加深度层次 ----
+        # 原理：真实光照中，头发会在额头和面部投射阴影，这是头部最重要的深度线索之一。
+        #       缺少这个阴影会让头发看起来像"贴在"头皮上，而非自然覆盖在头部上方。
+        #       在像素美术中，这个技法叫做"cast shadow"（投射阴影），与AO（环境光遮蔽）互补：
+        #       AO是物体自身缝隙的暗化，投射阴影是一个物体在另一个物体表面的投影。
+        # 实现：扫描头发像素的底部边缘，在下方1-2px的皮肤区域添加偏冷暗化。
+        #       偏冷是因为头发遮挡了暖色主光源，剩余光是偏冷的天空/环境散射光。
+        #       阴影只应用于头部球体范围内的皮肤像素，避免影响耳朵和身体。
+        if hair_style != "bald":
+            _hs_primary = 18    # 主阴影暗化量（紧贴头发下方1px）
+            _hs_secondary = 8   # 次级阴影暗化量（再下方1px，渐淡消失）
+            for y in range(max(1, head_cy - head_r - ps * 2), min(H - 2, head_cy + head_r // 3)):
+                for x in range(max(0, cx - head_r - ps * 2), min(W, cx + head_r + ps * 2)):
+                    # 限制在头部球体范围内（避免在耳朵/身体区域误投阴影）
+                    _hs_dx = x - cx
+                    _hs_dy = y - head_cy
+                    if _hs_dx * _hs_dx + _hs_dy * _hs_dy > (head_r + ps + 2) * (head_r + ps + 2):
+                        continue
+                    # 检查上方像素是否为头发色
+                    _above = canvas[y - 1][x]
+                    if _above[3] == 0:
+                        continue
+                    _above_is_hair = False
+                    for _hc in (hair_color, hair_dark, hair_light):
+                        if (abs(int(_above[0]) - _hc[0]) + abs(int(_above[1]) - _hc[1]) + abs(int(_above[2]) - _hc[2])) < 80:
+                            _above_is_hair = True
+                            break
+                    if not _above_is_hair:
+                        continue
+                    # 检查当前像素是否为皮肤色（匹配基础肤色，允许光照偏移）
+                    _curr = canvas[y][x]
+                    if _curr[3] == 0:
+                        continue
+                    _cr, _cg, _cb, _ca = _curr
+                    _skin_dist = abs(_cr - skin[0]) + abs(_cg - skin[1]) + abs(_cb - skin[2])
+                    if _skin_dist < 80:
+                        # 主阴影：偏冷暗化（蓝色少减→偏冷色调）
+                        canvas[y][x] = (max(0, _cr - _hs_primary + 2),
+                                        max(0, _cg - _hs_secondary),
+                                        max(0, _cb - _hs_primary + 5),
+                                        _ca)
+                        # 次级阴影：再下方1px，更淡的暗化
+                        if y + 1 < H:
+                            _below = canvas[y + 1][x]
+                            if _below[3] > 0:
+                                _br, _bg, _bb, _ba = _below
+                                _below_skin = abs(_br - skin[0]) + abs(_bg - skin[1]) + abs(_bb - skin[2])
+                                if _below_skin < 80:
+                                    canvas[y + 1][x] = (max(0, _br - _hs_secondary + 1),
+                                                        max(0, _bg - _hs_secondary),
+                                                        max(0, _bb - _hs_secondary + 3),
+                                                        _ba)
         
         # ---- v0.3.13: 绘制耳朵 ----
         # 耳朵位于头部两侧中部，为肤色椭圆（2x3像素）
@@ -2970,6 +3054,16 @@ class CharacterEngine:
             shadow_ry = max(1, int(shadow_ry / _stretch))  # 越高越扁（透视压缩）
             shadow_alpha_base = max(12, 70 - _jump_h * 4)  # 越高越淡（距离衰减）
         
+        # v0.3.33: 有色地面阴影（Tinted Drop Shadow）— 基于角色配色着色的投影
+        # 原理：真实光照中，阴影不是纯黑色的——它会吸收物体表面的颜色并偏移。
+        #       专业像素美术技法中，用角色互补色或深色变体替代纯黑阴影，
+        #       可以让阴影成为画面的一部分而非"空洞"，增强色彩和谐感。
+        #       具体做法：阴影色 = body色的深色偏冷变体，而非纯黑(0,0,0)。
+        #       这样阴影会带有角色衣着的色调倾向，在视觉上更"统一"。
+        _shadow_base_r = max(0, body_color[0] // 4 - 10)  # body色除4再偏暗
+        _shadow_base_g = max(0, body_color[1] // 4 - 10)
+        _shadow_base_b = max(0, body_color[2] // 4 + 5)   # 蓝色少减→偏冷色调
+        
         for y in range(max(0, shadow_y_base - shadow_ry), min(H, shadow_y_base + shadow_ry + 1)):
             for x in range(max(0, cx - shadow_rx), min(W, cx + shadow_rx)):
                 dx_s = (x - cx) / max(1, shadow_rx)
@@ -2981,7 +3075,12 @@ class CharacterEngine:
                     sa = int(shadow_alpha_base * falloff * falloff)
                     if sa > 3 and canvas[y][x][3] == 0:
                         # 仅在空白区域绘制阴影（不覆盖角色像素）
-                        canvas[y][x] = (0, 0, 0, sa)
+                        # 边缘略微提亮阴影色（模拟环境光对阴影边缘的照亮）
+                        _edge_bright = int((1.0 - falloff) * 15)
+                        canvas[y][x] = (min(255, _shadow_base_r + _edge_bright),
+                                        min(255, _shadow_base_g + _edge_bright),
+                                        min(255, _shadow_base_b + _edge_bright),
+                                        sa)
         
         return canvas
 
