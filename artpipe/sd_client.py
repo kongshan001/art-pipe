@@ -2,7 +2,7 @@
 ArtPipe AI图像生成客户端 v0.3
 支持 Pollinations.ai (免费) + HuggingFace Inference API (免费) + 可扩展后端
 零外部依赖，纯标准库实现
-v0.3.12: 新增 HuggingFace 免费后端 (Flux.1-schnell) + AI竖版比例 + 后处理缩略图
+v0.3.18: 增强版 — 视角约束+体型描述注入+负面提示词扩展+enhance参数
 """
 import base64
 import json
@@ -17,7 +17,7 @@ from urllib.error import URLError, HTTPError
 BACKENDS = {
     "pollinations": {
         "name": "Pollinations.ai",
-        "url_template": "https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&seed={seed}&nologo=true&model=flux-anime&negative={negative}",
+        "url_template": "https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&seed={seed}&nologo=true&model=flux-anime&negative={negative}&enhance=true",
         "timeout": 60,
         "free": True,
     },
@@ -114,6 +114,7 @@ class AIGenerator:
     }
 
     # 负面提示词：综合通用质量排除 + 游戏精灵专用排除
+    # v0.3.18: 增强版 — 新增Flux常见伪影排除 + 角色一致性约束
     NEGATIVE_PROMPT = (
         "lowres, bad anatomy, bad hands, bad proportions, text, error, "
         "missing fingers, extra digit, fewer digits, cropped, worst quality, "
@@ -124,7 +125,12 @@ class AIGenerator:
         "3d render, realistic, photorealistic, photograph, oil painting, "
         "detailed background, complex background, gradient background, "
         "volumetric lighting, bokeh, lens flare, depth of field, "
-        "multiple characters, partial body"
+        "multiple characters, partial body, "
+        "asymmetric face, cross-eyed, awkward pose, twisted torso, "
+        "floating limbs, disconnected body parts, extra joints, "
+        "background characters, shadow clone, mirror reflection, "
+        "side view, back view, three-quarter view, profile view, "
+        "overlapping limbs, tangled arms, melted proportions"
     )
 
     # 质量增强后缀 — 遵循 [quality → subject → framing → style → bg] 结构
@@ -203,17 +209,38 @@ class AIGenerator:
 
         return None
 
+    # v0.3.18: 角色特征细节注入 — 按风格提供具体的解剖比例约束
+    # 研究表明 Flux/SD 模型对 "X-year-old" 年龄描述和具体比例描述响应良好
+    STYLE_BODY_HINTS = {
+        "pixel": "compact chibi proportions with large head, short limbs, stylized simplified anatomy,",
+        "cartoon": "slightly exaggerated cartoon proportions with expressive body language, large expressive eyes, smooth rounded forms,",
+        "anime": "idealized anime proportions with long legs, slim athletic build, detailed expressive eyes, graceful posture,",
+        "western": "heroic western proportions with broad shoulders, strong confident stance, bold muscular silhouette,",
+        "dark": "tall imposing proportions with angular features, gaunt dramatic build, sharp angular silhouette,",
+    }
+
+    # v0.3.18: 视角约束前缀 — 强化正面全身视角，减少侧面/半身生成
+    VIEWPOINT_CONSTRAINT = (
+        "front-facing full body portrait, character standing centered in frame, "
+        "head to toe fully visible, straight-on camera angle, symmetrical composition, "
+        "character looking directly at viewer, centered subject, "
+    )
+
     def _build_prompt(self, user_prompt, style, char_type, pose=None):
         """构建高质量游戏角色提示词
-        v0.3.9: 采用 Flux 友好的自然语言描述 + 配色方案注入
-        结构: [quality] → [style as sentence] → [char_type with colors] → [user_desc] → [pose] → [quality_suffix]
+        v0.3.18: 增强版 — 新增视角约束 + 角色体型描述 + 结构化 prompt
+        结构: [quality] → [viewpoint] → [style as sentence] → [body hint]
+              → [char_type with colors] → [user_desc] → [pose] → [quality_suffix]
         """
         parts = []
 
         # 1. 质量标签前置（模型最先处理的部分权重最高）
         parts.append("masterpiece, best quality, highly detailed")
 
-        # 2. 风格描述（转换为自然语言句子，Flux 更擅长理解完整句子）
+        # 2. v0.3.18: 视角约束（紧跟质量标签，强化全身正面视角）
+        parts.append(self.VIEWPOINT_CONSTRAINT)
+
+        # 3. 风格描述（转换为自然语言句子，Flux 更擅长理解完整句子）
         style_map = {
             "pixel": "The character is rendered in a retro pixel art style reminiscent of 16-bit era video games, with clean crisp pixels, no anti-aliasing, flat colors, and perfectly aligned pixel grid.",
             "cartoon": "The character is drawn in a vibrant cartoon style with thick bold outlines, flat cel-shaded colors, cute exaggerated proportions, and smooth shading typical of modern mobile games.",
@@ -223,7 +250,12 @@ class AIGenerator:
         }
         parts.append(style_map.get(style, style_map["cartoon"]))
 
-        # 3. 角色类型 + 配色方案（v0.3.9: 合并为自然语言描述）
+        # 4. v0.3.18: 角色体型约束（按风格注入解剖比例细节）
+        body_hint = self.STYLE_BODY_HINTS.get(style, "")
+        if body_hint:
+            parts.append(body_hint)
+
+        # 5. 角色类型 + 配色方案（v0.3.9: 合并为自然语言描述）
         type_desc = self.TYPE_PROMPTS.get(char_type, "")
         color_scheme = self.COLOR_SCHEMES.get(char_type, "")
         if type_desc and color_scheme:
@@ -231,10 +263,10 @@ class AIGenerator:
         elif type_desc:
             parts.append(type_desc)
 
-        # 4. 用户原始提示词
+        # 6. 用户原始提示词
         parts.append(user_prompt)
 
-        # 5. 姿势（转为自然语言）
+        # 7. 姿势（转为自然语言）
         pose_map = {
             "idle": "The character is standing in an idle pose facing forward with a neutral relaxed expression.",
             "walk": "The character is captured mid-stride in a natural walking animation pose.",
@@ -249,7 +281,7 @@ class AIGenerator:
         if pose and pose in pose_map:
             parts.append(pose_map[pose])
 
-        # 6. 质量增强后缀（自然语言）
+        # 8. 质量增强后缀（自然语言）
         parts.append(self.QUALITY_SUFFIX)
 
         return ", ".join(parts)

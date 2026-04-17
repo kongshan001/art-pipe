@@ -2,7 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
-v0.3.16: 施法动画(cast, 7帧蓄力→释放→恢复) + 武器发光效果(additive glow on staff gem/sword tip)
+v0.3.18: 感知色彩质量修正(Rec.709亮度加权饱和度上限+最小色距+黄金角度展开)
 """
 import hashlib
 import json
@@ -411,11 +411,12 @@ class CharacterEngine:
             return None
 
     def _harmonize_palette(self, palette, rng):
-        """v0.3.5: 基于HSV色彩理论的真正色相和谐算法
-        计算主色色相后，根据和谐模式旋转次要色的色相角度：
-        - 类似色(analogous): ±30° 色相偏移，温暖协调
-        - 三角色(triadic): ±120° 色相偏移，活泼对比
-        - 分裂互补(split-complementary): ±150° 色相偏移，戏剧张力
+        """v0.3.18: 基于感知色彩理论的增强色相和谐算法
+        v0.3.5: HSV色相和谐 — 类似色/三角色/分裂互补/四方色
+        v0.3.18: 新增感知色彩质量修正：
+          - 感知亮度感知饱和度上限（防止霓虹色，Rec.709加权）
+          - 最小感知色距保障（调色板内颜色在精灵表小尺寸下可区分）
+          - 黄金角度色相展开（色彩过近时自动偏移）
         """
         if not palette or len(palette) < 2:
             return palette
@@ -462,6 +463,17 @@ class CharacterEngine:
                 min(255, max(0, int((g + m) * 255))),
                 min(255, max(0, int((b + m) * 255))),
             )
+
+        # v0.3.18: 感知亮度计算 (Rec.709标准加权)
+        # 人眼对绿色最敏感(71.5%)，红色次之(21.3%)，蓝色最弱(7.2%)
+        def perceived_luminance(r, g, b):
+            return 0.2126 * (r / 255.0) + 0.7152 * (g / 255.0) + 0.0722 * (b / 255.0)
+
+        # v0.3.18: 感知色距（加权欧氏距离近似delta-E）
+        # 绿色通道权重×4（人眼最敏感），红色×2，蓝色×3（像素美术中蓝色区分度重要）
+        def color_dist_sq(c1, c2):
+            dr, dg, db = c1[0] - c2[0], c1[1] - c2[1], c1[2] - c2[2]
+            return 2 * dr * dr + 4 * dg * dg + 3 * db * db
 
         # 提取主色HSV
         primary = palette[0]
@@ -525,7 +537,37 @@ class CharacterEngine:
 
             result.append(hsv_to_rgb(new_h, new_s, new_v))
 
-        return result
+        # v0.3.18: 感知色彩质量后处理
+        # 1) 感知饱和度上限：高亮度+高饱和=霓虹色(不协调)，需渐进衰减
+        #    钟形曲线：中间色调(L≈0.5)饱和度上限最高(1.0)，
+        #    极端亮/暗(L≈0或1)时上限降低到0.55，避免刺眼
+        # 2) 最小感知色距：确保调色板内颜色在精灵表小尺寸(64x64)下仍可区分
+        #    阈值1500 ≈ 约39 RGB距离（绿色通道加权后）
+        # 3) 黄金角度偏移：色彩过近时用137.5°旋转，保证最大色相展开
+        fixed = [result[0]]
+        for i in range(1, len(result)):
+            r, g, b = result[i]
+            h, s, v = rgb_to_hsv(r, g, b)
+            L = perceived_luminance(r, g, b)
+            # 感知饱和度上限
+            sat_cap = 0.55 + 0.45 * (1 - abs(2 * L - 1))
+            if s > sat_cap:
+                s = sat_cap + (s - sat_cap) * 0.25  # 渐进衰减，保留25%超量
+            new_color = hsv_to_rgb(h, s, v)
+            # 最小感知色距检查（与已有所有颜色比较）
+            min_dist = float('inf')
+            for prev in fixed:
+                d = color_dist_sq(new_color, prev)
+                if d < min_dist:
+                    min_dist = d
+            if min_dist < 1500:
+                # 色距不足，用黄金角度(≈137.508°)偏移色相
+                # 黄金角度保证连续旋转不会回到近邻位置（最大 irrational coverage）
+                h = (h + 137.508) % 360
+                new_color = hsv_to_rgb(h, s, v)
+            fixed.append(new_color)
+
+        return fixed
 
     def _render_all_frames(self, rng, style_cfg, type_cfg, palette, char_type_key="warrior"):
         """渲染8种动画的帧（v0.3.11: 传入char_type_key用于发型选择）"""
