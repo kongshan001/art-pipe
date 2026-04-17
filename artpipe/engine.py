@@ -1536,10 +1536,29 @@ class CharacterEngine:
                 else:
                     row_color = body_color
             
-            for x in range(max(0, cx - body_draw_w//2), min(W, cx + body_draw_w//2)):
+            # v0.3.28: 身体轮廓塑形 — 肩宽→腰窄→髋宽的自然体型曲线
+            # 避免纯矩形僵硬感，增加角色轮廓的有机感和立体感
+            # 使用 smoothstep 平滑插值，确保肩腰过渡自然无锯齿
+            _waist_narrow = 0.12  # 腰部最大收窄比例（12%）
+            if vert_t < 0.25:
+                _cf = 1.0  # 肩部保持全宽
+            elif vert_t < 0.55:
+                _nt = (vert_t - 0.25) / 0.30
+                _nt = _nt * _nt * (3 - 2 * _nt)  # smoothstep 平滑过渡
+                _cf = 1.0 - _waist_narrow * _nt
+            elif vert_t < 0.75:
+                _wt = (vert_t - 0.55) / 0.20
+                _wt = _wt * _wt * (3 - 2 * _wt)  # smoothstep
+                _cf = (1.0 - _waist_narrow) + _waist_narrow * 0.6 * _wt
+            else:
+                _bt = (vert_t - 0.75) / 0.25
+                _cf = (1.0 - _waist_narrow * 0.4) - 0.05 * _bt  # 底部微收连接腿部
+            _contour_hw = max(2, int(body_draw_w // 2 * _cf))
+            
+            for x in range(max(0, cx - _contour_hw), min(W, cx + _contour_hw)):
                 # v0.3.9: 横向也做微妙渐变（中心亮、边缘暗）
                 # v0.3.15: 横向边缘也用抖动过渡
-                h_dist = abs(x - cx) / max(1, body_draw_w // 2)  # 0=中心 1=边缘
+                h_dist = abs(x - cx) / max(1, _contour_hw)  # 0=中心 1=边缘
                 local_x_body = x - (cx - body_draw_w//2)
                 local_y_body = y - body_top
                 dither_val = dither_thresholds[local_y_body % 4][local_x_body % 4] / 16.0
@@ -2594,10 +2613,15 @@ class CharacterEngine:
         shadow_y_base = leg_top + leg_h + body_dy  # 阴影Y基准位置
         shadow_rx = int(body_draw_w * 1.3)  # 阴影水平半径（比身体宽一些）
         shadow_ry = max(2, int(leg_h * 0.15))  # 阴影垂直半径（很扁）
-        # 阴影透明度随身体偏移动态变化（跳起时阴影更淡）
+        # v0.3.28: 动态跳跃阴影 — 角色越高，阴影越宽越扁越淡（透视投影模拟）
+        # 原理：真实光照中，物体离地面越远，投射的阴影面积越大但浓度越低
         shadow_alpha_base = 70
         if body_dy < -2:
-            shadow_alpha_base = max(20, shadow_alpha_base + body_dy * 5)  # 上升→阴影淡
+            _jump_h = abs(body_dy)
+            _stretch = 1.0 + _jump_h * 0.06  # 每像素高度→阴影宽度+6%
+            shadow_rx = int(shadow_rx * _stretch)  # 越高越宽（透视扩散）
+            shadow_ry = max(1, int(shadow_ry / _stretch))  # 越高越扁（透视压缩）
+            shadow_alpha_base = max(12, 70 - _jump_h * 4)  # 越高越淡（距离衰减）
         
         for y in range(max(0, shadow_y_base - shadow_ry), min(H, shadow_y_base + shadow_ry + 1)):
             for x in range(max(0, cx - shadow_rx), min(W, cx + shadow_rx)):
