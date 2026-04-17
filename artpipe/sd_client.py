@@ -69,7 +69,10 @@ class AIGenerator:
         "idle": "standing idle pose, facing forward, neutral expression",
         "walk": "walking pose, mid-stride, dynamic",
         "run": "running pose, action, dynamic movement",
+        "jump": "jumping pose, airborne, legs tucked, ascending, dynamic leap",  # v0.3.17
         "attack": "attack pose, weapon swung, action shot, dynamic",
+        "defend": "defensive stance, shield raised, bracing for impact, guarded posture",  # v0.3.17
+        "cast": "casting magic spell, hands glowing, arcane energy, mystical power",  # v0.3.17
         "hurt": "hurt pose, knocked back, pain expression",
         "die": "falling down, defeated pose, dramatic",
     }
@@ -89,6 +92,11 @@ class AIGenerator:
                    "intimidating, detailed texture",
         "npc": "friendly NPC villager, simple clothes, approachable, "
                "warm expression, casual stance",
+        # v0.3.17: 新增骑士和吟游诗人的 AI 提示词
+        "knight": "holy paladin knight in shining plate armor, full helmet with plume, "
+                  "tower shield, sacred sword, imposing heavy armor, divine protector",
+        "bard": "bard minstrel with lute, colorful troubadour outfit, pointed hat with feather, "
+                "charming performer, musical instrument, artistic flair",
     }
 
     # v0.3.9: 配色方案模板 — 按角色类型提供更精准的色彩描述
@@ -100,6 +108,9 @@ class AIGenerator:
         "healer": "white and soft gold holy vestments with pale blue divine glow",
         "monster": "dark obsidian and toxic green with glowing red eyes",
         "npc": "warm earth tones, simple brown and cream village clothing",
+        # v0.3.17
+        "knight": "polished silver and gold plate armor with royal blue tabard and crimson cross emblem",
+        "bard": "rich burgundy and forest green troubadour outfit with gold embroidery and colorful patches",
     }
 
     # 负面提示词：综合通用质量排除 + 游戏精灵专用排除
@@ -228,7 +239,10 @@ class AIGenerator:
             "idle": "The character is standing in an idle pose facing forward with a neutral relaxed expression.",
             "walk": "The character is captured mid-stride in a natural walking animation pose.",
             "run": "The character is in a dynamic running pose showing fast forward movement.",
+            "jump": "The character is leaping into the air with legs tucked in a dynamic jumping pose.",  # v0.3.17
             "attack": "The character is in a dramatic attack pose with weapon swung forward in an action shot.",
+            "defend": "The character is in a defensive stance with guard raised, bracing for impact.",  # v0.3.17
+            "cast": "The character is casting a magic spell with hands glowing and arcane energy swirling around.",  # v0.3.17
             "hurt": "The character is knocked backward showing pain and surprise.",
             "die": "The character is falling down in a dramatic defeated pose.",
         }

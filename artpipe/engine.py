@@ -156,6 +156,26 @@ CHAR_TYPES = {
         "arm_ratio": 1.00,   # 标准手臂
         "accessories": ["scarf", "collar", "belt", "earing"],
     },
+    # v0.3.17: 新增骑士 — 重甲坦克型角色
+    "knight": {
+        "name": "骑士", "head_ratio": 0.17, "body_w": 0.38,
+        "has_helmet": True, "weapon": "sword",
+        "face_type": "serious",
+        "body_ratio": 1.25,  # 最宽壮躯干
+        "leg_ratio": 0.85,   # 短粗稳固腿
+        "arm_ratio": 1.15,   # 强壮手臂
+        "accessories": ["belt", "shoulder_pads", "collar", "belt_pouch"],
+    },
+    # v0.3.17: 新增吟游诗人 — 轻巧辅助型角色
+    "bard": {
+        "name": "吟游诗人", "head_ratio": 0.20, "body_w": 0.24,
+        "has_hat": True, "weapon": "lute",
+        "face_type": "gentle",
+        "body_ratio": 0.88,  # 纤细身材
+        "leg_ratio": 1.05,   # 灵活腿
+        "arm_ratio": 1.00,   # 匀称手臂
+        "accessories": ["scarf", "earing", "collar", "belt"],
+    },
 }
 
 # v0.3.11: 发型配置 — 每个角色类型可选的发型池
@@ -176,6 +196,9 @@ HAIR_STYLES = {
     "healer": ["long", "medium", "ponytail", "side_part"],
     "monster": ["spiky", "bald"],
     "npc": ["short", "medium", "side_part", "long"],
+    # v0.3.17
+    "knight": ["short", "bald", "medium"],        # 骑士：短发为主（被头盔遮挡）
+    "bard": ["long", "ponytail", "medium", "side_part"],  # 吟游诗人：飘逸发型
 }
 
 
@@ -218,6 +241,8 @@ class CharacterEngine:
             "archer": ["弓箭手", "猎人", "archer", "hunter", "弓"],
             "rogue": ["盗贼", "刺客", "rogue", "assassin", "thief", "匕首", "忍者", "ninja"],
             "healer": ["治疗", "牧师", "healer", "priest", "cleric", "修女", "僧侣"],
+            "knight": ["骑士", "圣骑士", "knight", "paladin", "坦克", "tank"],  # v0.3.17
+            "bard": ["诗人", "吟游诗人", "bard", "minstrel", "音乐家", "乐师"],  # v0.3.17
             "npc": ["村民", "商人", "npc", "villager", "店员", "老爷爷", "老奶奶"],
             "warrior": ["战士", "武士", "骑士", "warrior", "knight", "剑", "勇者"],
         }
@@ -445,15 +470,18 @@ class CharacterEngine:
         result = [primary]  # 主色保持不变
 
         # 用RNG选择和谐模式（避免所有角色用同一模式）
-        harmony_modes = ["analogous", "triadic", "split_comp"]
-        # 类似色概率50%，三角色30%，分裂互补20%
+        # v0.3.17: 新增四方色(tetradic)和谐模式 — 4色色环互补，丰富视觉表现力
+        harmony_modes = ["analogous", "triadic", "split_comp", "tetradic"]
+        # 类似色40%，三角色25%，分裂互补20%，四方色15%
         roll = rng.next()
-        if roll < 0.5:
+        if roll < 0.4:
             mode = "analogous"
-        elif roll < 0.8:
+        elif roll < 0.65:
             mode = "triadic"
-        else:
+        elif roll < 0.85:
             mode = "split_comp"
+        else:
+            mode = "tetradic"
 
         for i in range(1, len(palette)):
             r, g, b = palette[i]
@@ -476,6 +504,17 @@ class CharacterEngine:
                 # 三角色模式降低饱和度以避免过于刺眼
                 new_s = min(s, p_s) * 0.85
                 new_v = v * 0.8 + p_v * 0.2
+            elif mode == "tetradic":
+                # v0.3.17: 四方色(tetradic/矩形互补) — 两组互补色，色环上呈矩形分布
+                # 在90°和180°之间交替选择，产生丰富但平衡的4色配色方案
+                # 概率：50%偏移+90°，50%偏移-90°（第二对互补色）
+                angle = 90 if (i % 2 == 1) else 180
+                sign = 1 if rng.next() > 0.5 else -1
+                hue_offset = sign * angle + (rng.next() - 0.5) * 15  # ±7.5°抖动
+                new_h = p_h + hue_offset
+                # 四方色需要降低饱和度以避免4色同时高饱和的混乱感
+                new_s = min(s, p_s) * 0.75
+                new_v = v * 0.85 + p_v * 0.15
             else:
                 # 分裂互补：偏移 ±150°
                 sign = 1 if rng.next() > 0.5 else -1
@@ -1386,6 +1425,81 @@ class CharacterEngine:
                     if halo_y+1 < H:
                         canvas[halo_y+1][x] = (255, 240, 150, 120)
 
+        # v0.3.17: 骑士 — 全覆头盔（覆盖头部+面甲+头顶羽饰）
+        if type_cfg.get("has_helmet"):
+            helm_color = (max(0, accent[0]-20), max(0, accent[1]-20), max(0, accent[2]-10))
+            helm_highlight = (min(255, accent[0]+30), min(255, accent[1]+30), min(255, accent[2]+30))
+            # 头盔主体（覆盖整个头部区域，比头大1圈）
+            for y in range(max(0, head_cy - head_r - ps), head_cy + head_r//2 + 1):
+                for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps + 1)):
+                    dx, dy = x - cx, y - head_cy
+                    dist_sq = dx*dx + (dy+ps)*(dy+ps)
+                    r_sq = (head_r + ps) * (head_r + ps)
+                    if dist_sq <= r_sq:
+                        canvas[y][x] = (*helm_color, 255)
+            # 头盔顶部高光弧线
+            hl_y = max(0, head_cy - head_r - ps + 1)
+            for x in range(max(0, cx - head_r//2), min(W, cx + head_r//2)):
+                if 0 <= hl_y < H:
+                    canvas[hl_y][x] = (*helm_highlight, 255)
+            # 面甲横缝（眼睛位置的横线开口）
+            visor_y = head_cy - head_r//4
+            for x in range(max(0, cx - head_r + ps), min(W, cx + head_r - ps + 1)):
+                if 0 <= visor_y < H:
+                    canvas[visor_y][x] = (20, 15, 15, 255)  # 深色眼缝
+            # 头顶羽饰（竖立的羽毛状装饰，accent色）
+            plume_h = max(ps*4, head_r + ps*3)
+            plume_base_y = head_cy - head_r - ps
+            for dy2 in range(plume_h):
+                py = plume_base_y - dy2
+                # 羽毛逐渐收窄，带微弯
+                curve = int(math.sin(dy2 * 0.2) * ps * 0.5)
+                plume_w = max(1, ps - dy2 // (plume_h // ps + 1))
+                for dx2 in range(-plume_w, plume_w + 1):
+                    px = cx + curve + dx2
+                    if 0 <= py < H and 0 <= px < W:
+                        canvas[py][px] = (*accent, 255)
+
+        # v0.3.17: 吟游诗人 — 尖顶帽（三角形帽子+帽檐+羽毛装饰）
+        if type_cfg.get("has_hat"):
+            hat_color = (max(0, accent[0]-10), max(0, accent[1]-10), max(0, accent[2]+10))
+            hat_band_color = (*accent_light, 255)
+            # 帽檐（宽椭圆，位于头顶稍下方）
+            brim_y = head_cy - head_r + ps
+            brim_rx = head_r + ps*3
+            brim_ry = max(1, ps)
+            for x in range(max(0, cx - brim_rx), min(W, cx + brim_rx + 1)):
+                dx_b = x - cx
+                if dx_b*dx_b <= brim_rx*brim_rx:
+                    if 0 <= brim_y < H:
+                        canvas[brim_y][x] = (*hat_color, 255)
+                    if brim_y + 1 < H:
+                        canvas[brim_y+1][x] = (max(0, hat_color[0]-15), max(0, hat_color[1]-15), max(0, hat_color[2]-15), 255)
+            # 帽身（从帽檐向上的锥形，略微弯曲）
+            hat_h = head_r + ps*5
+            for dy2 in range(hat_h):
+                hy = brim_y - 2 - dy2
+                # 锥形收窄
+                w_at_h = max(1, int(brim_rx * (1.0 - dy2 / hat_h * 0.85)))
+                # 微弯
+                curve = int(math.sin(dy2 * 0.15) * ps * 0.3)
+                for x in range(max(0, cx - w_at_h + curve), min(W, cx + w_at_h + curve + 1)):
+                    if 0 <= hy < H:
+                        canvas[hy][x] = (*hat_color, 255)
+            # 帽带（帽身下部一圈accent色横条纹）
+            band_y = brim_y - ps
+            band_h = max(1, ps)
+            for dy2 in range(band_h):
+                by = band_y - dy2
+                w_at_h = max(1, int(brim_rx * (1.0 - dy2 / hat_h * 0.85)))
+                for x in range(max(0, cx - w_at_h), min(W, cx + w_at_h + 1)):
+                    if 0 <= by < H:
+                        canvas[by][x] = hat_band_color
+            # 帽顶高光
+            tip_y = brim_y - 2 - hat_h
+            if 0 <= tip_y < H:
+                canvas[tip_y][cx] = (*accent_light, 255)
+
         # ---- v0.3.9: 随机配件渲染 ----
         for acc in chosen_acc:
             if acc == "belt":
@@ -1603,6 +1717,46 @@ class CharacterEngine:
                 if 0 <= y < H:
                     for x in range(weapon_base_x, min(W, weapon_base_x + ps*3)):
                         canvas[y][x] = (180, 160, 100, 255)
+        
+        # v0.3.17: 吟游诗人的鲁特琴（梨形琴身+长颈+弦线）
+        elif weapon == "lute":
+            # 琴颈（长直线）
+            neck_top_y = max(0, body_top + rady)
+            neck_bot_y = min(H, body_top + body_h + rady)
+            for y in range(neck_top_y, neck_bot_y):
+                nx = weapon_base_x + ps // 2
+                if 0 <= y < H and 0 <= nx < W:
+                    canvas[y][nx] = (160, 120, 70, 255)  # 木色琴颈
+                    if nx + 1 < W:
+                        canvas[y][nx+1] = (140, 100, 55, 255)  # 颈边暗色
+            # 琴身（梨形椭圆，位于琴颈底部）
+            body_cy = neck_bot_y - ps*2
+            body_rx = max(ps*3, arm_w + ps)
+            body_ry = max(ps*2, arm_w)
+            for y in range(max(0, body_cy - body_ry), min(H, body_cy + body_ry + 1)):
+                for x in range(max(0, weapon_base_x - body_rx + ps), min(W, weapon_base_x + body_rx + ps)):
+                    dx_l, dy_l = x - weapon_base_x - ps//2, y - body_cy
+                    if dx_l*dx_l + dy_l*dy_l <= body_rx*body_ry:
+                        if 0 <= y < H and 0 <= x < W:
+                            canvas[y][x] = (180, 140, 80, 255)  # 木色琴身
+            # 琴身高光
+            hl_y = max(0, body_cy - body_ry // 2)
+            for x in range(max(0, weapon_base_x - body_rx//3 + ps), min(W, weapon_base_x + body_rx//3 + ps)):
+                if 0 <= hl_y < H:
+                    canvas[hl_y][x] = (210, 175, 110, 255)
+            # 琴弦（琴身上的竖直线）
+            for y in range(max(0, body_cy - body_ry + ps), min(H, body_cy + body_ry)):
+                sx = weapon_base_x + ps // 2
+                if 0 <= y < H and 0 <= sx < W:
+                    canvas[y][sx] = (230, 220, 200, 200)  # 半透明弦线
+            # 音孔（琴身中央的圆形暗区）
+            hole_r = max(1, body_rx // 3)
+            for y in range(max(0, body_cy - hole_r), min(H, body_cy + hole_r + 1)):
+                for x in range(max(0, weapon_base_x + ps//2 - hole_r), min(W, weapon_base_x + ps//2 + hole_r + 1)):
+                    dx_h, dy_h = x - weapon_base_x - ps//2, y - body_cy
+                    if dx_h*dx_h + dy_h*dy_h <= hole_r*hole_r:
+                        if 0 <= y < H and 0 <= x < W:
+                            canvas[y][x] = (100, 70, 40, 255)  # 暗色音孔
         
         # ---- 描边（v0.3.4: 非破坏性8方向描边，保留角色细节） ----
         if outline:
