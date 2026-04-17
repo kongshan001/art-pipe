@@ -2,7 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
-v0.3.19: 情感化眼部表情(动画状态联动)+手臂渐变着色+动漫风副高光
+v0.3.20: 腿部纵向渐变着色(body_light/body_color/body_dark三区)+眉毛情感系统(动画状态联动:攻击V形怒眉/惊讶上扬/死亡下垂/施法微蹙)
 """
 import hashlib
 import json
@@ -944,32 +944,61 @@ class CharacterEngine:
                     canvas[y][x] = (*skin, 255)
                     
                     # ---- v0.3.7: 增强面部细节 ----
-                    # 眉毛区域（眼睛上方1-2像素）
+                    # v0.3.20: 眉毛情感系统 — 动画状态联动眉毛角度
+                    # hurt/jump: 上扬(惊讶) | attack/defend: 内低外高(愤怒V形) 
+                    # die: 下垂(虚弱) | cast: 微蹙(专注) | 其他: 正常(face_type默认)
                     brow_y = -ps - 1
-                    brow_zone_y = dy == brow_y or dy == brow_y - 1
-                    brow_inner = abs(dx) >= head_r//3 and abs(dx) <= head_r//2
+                    # 动画状态影响眉毛偏移
+                    brow_anim_dy = 0  # 整体Y偏移
+                    brow_anim_tilt = 0  # 内外倾斜: 正值=内低外高(怒)
+                    brow_anim_alpha = 1.0  # 眉毛颜色强度(1.0=正常, 0.5=淡化)
+                    if anim in ("attack", "defend"):
+                        brow_anim_tilt = 1  # 愤怒V形：内侧下压1px
+                        brow_anim_dy = 0
+                    elif anim in ("hurt", "jump"):
+                        brow_anim_dy = -1  # 惊讶：整体上扬1px
+                        brow_anim_tilt = -1  # 内高外低(倒V惊讶)
+                    elif anim == "die":
+                        brow_anim_dy = 1  # 虚弱：整体下垂1px
+                        brow_anim_alpha = 0.5  # 颜色变淡
+                    elif anim == "cast":
+                        brow_anim_tilt = 1  # 施法专注：微蹙
                     
+                    brow_base_y = brow_y + brow_anim_dy
+                    # 愤怒时内侧额外下压，惊讶时内侧额外上扬
+                    brow_inner_side = 1 if dx > 0 else -1
+                    brow_tilt_dy = brow_anim_tilt if abs(dx) >= head_r//3 + 1 else 0
+                    brow_check_y = brow_base_y - brow_tilt_dy
+                    brow_zone_y = dy == brow_check_y or dy == brow_check_y - 1
+                    brow_inner = abs(dx) >= head_r//3 and abs(dx) <= head_r//2
+
                     if brow_zone_y and brow_inner:
+                        # 眉毛基础颜色（根据动画状态调整强度）
+                        brow_dark = max(0, int(80 * brow_anim_alpha))
+                        brow_mid = max(0, int(60 * brow_anim_alpha))
+                        brow_light = max(0, int(50 * brow_anim_alpha))
+                        brow_soft = max(0, int(30 * brow_anim_alpha))
+                        
                         if face_type == "fierce":
-                            # 怒眉：内低外高（向内倾斜）
-                            brow_offset = 1 if dx > 0 else -1
-                            if dy == brow_y and abs(dx) <= head_r//2 - 1:
-                                canvas[y][x] = (max(0, skin[0]-80), max(0, skin[1]-80), max(0, skin[2]-80), 255)
-                            elif dy == brow_y - 1 and abs(dx) >= head_r//3 + 1:
-                                canvas[y][x] = (max(0, skin[0]-60), max(0, skin[1]-60), max(0, skin[2]-60), 255)
+                            # 怒眉：内低外高（向内倾斜）+ 动画叠加
+                            base_tilt = 1 if dx > 0 else -1
+                            if dy == brow_check_y and abs(dx) <= head_r//2 - 1:
+                                canvas[y][x] = (max(0, skin[0]-brow_dark), max(0, skin[1]-brow_dark), max(0, skin[2]-brow_dark), 255)
+                            elif dy == brow_check_y - 1 and abs(dx) >= head_r//3 + 1:
+                                canvas[y][x] = (max(0, skin[0]-brow_mid), max(0, skin[1]-brow_mid), max(0, skin[2]-brow_mid), 255)
                         elif face_type == "gentle":
                             # 温柔淡眉：浅色短横线
-                            if dy == brow_y and abs(dx) >= head_r//3 + 1 and abs(dx) <= head_r//2 - 2:
-                                canvas[y][x] = (max(0, skin[0]-30), max(0, skin[1]-30), max(0, skin[2]-30), 255)
+                            if dy == brow_check_y and abs(dx) >= head_r//3 + 1 and abs(dx) <= head_r//2 - 2:
+                                canvas[y][x] = (max(0, skin[0]-brow_soft), max(0, skin[1]-brow_soft), max(0, skin[2]-brow_soft), 255)
                         elif face_type == "serious":
                             # 严肃平眉：深色横线
-                            if dy == brow_y:
-                                canvas[y][x] = (max(0, skin[0]-70), max(0, skin[1]-70), max(0, skin[2]-70), 255)
+                            if dy == brow_check_y:
+                                canvas[y][x] = (max(0, skin[0]-brow_dark), max(0, skin[1]-brow_dark), max(0, skin[2]-brow_dark), 255)
                         elif face_type == "cute":
                             # 可爱弯眉：弧形短眉
                             brow_curve = 1 if abs(dx) <= head_r//3 + 2 else 0
-                            if dy == brow_y - brow_curve:
-                                canvas[y][x] = (max(0, skin[0]-50), max(0, skin[1]-50), max(0, skin[2]-50), 255)
+                            if dy == brow_check_y - brow_curve:
+                                canvas[y][x] = (max(0, skin[0]-brow_light), max(0, skin[1]-brow_light), max(0, skin[2]-brow_light), 255)
                     
                     # 眼睛（v0.3.19: 情感化眼部表情 — 根据动画状态调整睁眼程度）
                     # hurt/jump: 睁大(惊讶) | attack/defend: 眯眼(专注) | die: 半闭(虚弱)
@@ -1362,20 +1391,34 @@ class CharacterEngine:
                 if abs(x - cx) <= ps:
                     canvas[y][x] = (*accent_light, 255)
         
-        # ---- 绘制腿（v0.3.1: 独立肢体偏移） ----
+        # ---- 绘制腿（v0.3.20: 纵向渐变着色增加立体感，匹配身体渐变风格） ----
         leg_w = body_w // 3
-        # 左腿（带偏移）
+        # 左腿（带偏移 + 纵向渐变：顶部受光偏亮，底部阴影偏暗）
         ldx, ldy = pose["left_leg_dx"], pose["left_leg_dy"]
         for y in range(leg_top + ldy, min(H, leg_top + ldy + leg_h)):
+            leg_t = (y - leg_top - ldy) / max(1, leg_h - 1)  # 0=顶 1=底
+            if leg_t < 0.3:
+                leg_c = body_light
+            elif leg_t > 0.7:
+                leg_c = body_dark
+            else:
+                leg_c = body_color
             for x in range(max(0, cx - body_w//2 + ldx), min(W, cx - body_w//2 + ldx + leg_w)):
                 if 0 <= y < H:
-                    canvas[y][x] = (*body_color, 255)
-        # 右腿（带偏移）
+                    canvas[y][x] = (*leg_c, 255)
+        # 右腿（带偏移 + 纵向渐变）
         rdx, rdy = pose["right_leg_dx"], pose["right_leg_dy"]
         for y in range(leg_top + rdy, min(H, leg_top + rdy + leg_h)):
+            leg_t = (y - leg_top - rdy) / max(1, leg_h - 1)  # 0=顶 1=底
+            if leg_t < 0.3:
+                leg_c = body_light
+            elif leg_t > 0.7:
+                leg_c = body_dark
+            else:
+                leg_c = body_color
             for x in range(max(0, cx + body_w//2 - leg_w + rdx), min(W, cx + body_w//2 + rdx)):
                 if 0 <= y < H:
-                    canvas[y][x] = (*body_color, 255)
+                    canvas[y][x] = (*leg_c, 255)
         
         # ---- 鞋子（v0.3.2: 腿底部加深色鞋子区域） ----
         shoe_color = (max(0, body_color[0]-60), max(0, body_color[1]-60), max(0, body_color[2]-60))
