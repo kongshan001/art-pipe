@@ -2,6 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
+v0.3.23: 调色板色彩快照(Palette Snap,后处理色彩量化到调色板色阶消除连续色调噪点)+头部镜面高光(Specular Highlight,圆形衰减高光点增强面部立体感)
 v0.3.21: 头部球面法线渐变着色(模拟球体光照:左上亮右下暗)+AI重试seed轮换(fix:重试时更换seed确保不同结果)
 v0.3.20: 腿部纵向渐变着色(body_light/body_color/body_dark三区)+眉毛情感系统(动画状态联动:攻击V形怒眉/惊讶上扬/死亡下垂/施法微蹙)
 """
@@ -2195,6 +2196,76 @@ class CharacterEngine:
                 if cleanup_pass[y][x]:
                     canvas[y][x] = (0, 0, 0, 0)
         
+        # ---- v0.3.23: 调色板色彩快照（Palette Snap）— 增强色彩统一性和像素艺术质感 ----
+        # 将角色像素颜色量化到调色板附近的有限色阶，减少后处理引入的连续色调噪点
+        # 原理：经过光照/AO/rim等多pass处理后，原始调色板的离散颜色被渐变为连续色，
+        #       导致像素画看起来像缩小的位图而非真正的像素美术。本pass将颜色重新snap到
+        #       调色板色阶上，保留光照方向但消除过度平滑。
+        # 方法：对每个不透明像素，找到其在调色板扩展色阶（亮/中/暗三层）中最近的匹配色
+        if palette and len(palette) >= 4:
+            # 构建扩展调色板：每个调色板色生成3个亮度层（亮+15, 原色, 暗-20）
+            # 加上描边色和黑色（阴影用），共约3*5+2=17色
+            snap_palette = []
+            for pc in palette:
+                snap_palette.append(pc)  # 原色
+                snap_palette.append((max(0, pc[0]-20), max(0, pc[1]-20), max(0, pc[2]-20)))  # 暗色
+                snap_palette.append((min(255, pc[0]+15), min(255, pc[1]+15), min(255, pc[2]+15)))  # 亮色
+            # 添加辅助色
+            snap_palette.append((0, 0, 0))  # 纯黑（阴影/描边）
+            if outline:
+                snap_palette.append(outline)  # 描边色
+            # 去重
+            seen = set()
+            unique_snap = []
+            for c in snap_palette:
+                if c not in seen:
+                    seen.add(c)
+                    unique_snap.append(c)
+            snap_palette = unique_snap
+
+            for y in range(H):
+                for x in range(W):
+                    r, g, b, a = canvas[y][x]
+                    if a == 0:
+                        continue
+                    # 找最近调色板色（加权欧氏距离，绿色通道权重×2）
+                    best_dist = float('inf')
+                    best_color = (r, g, b)
+                    for sc in snap_palette:
+                        dr_s, dg_s, db_s = r - sc[0], g - sc[1], b - sc[2]
+                        d = dr_s*dr_s + 2*dg_s*dg_s + db_s*db_s
+                        if d < best_dist:
+                            best_dist = d
+                            best_color = sc
+                    # 仅当距离超过阈值时才snap（避免过近颜色被不必要地替换）
+                    # 阈值设为600 ≈ RGB距离约20，足够保留光照梯度但消除噪点
+                    if best_dist > 200:
+                        canvas[y][x] = (*best_color, a)
+
+        # ---- v0.3.23: 头部镜面高光（Specular Highlight）— 增强面部立体感 ----
+        # 在头部左上方向添加一个小型圆形高光点，模拟光滑表面的镜面反射
+        # 与v0.3.21的球面法线渐变着色互补：渐变提供柔和的漫射光感，镜面高光提供锐利的反射感
+        # 位置：头部圆心偏左上(cx - head_r*0.25, head_cy - head_r*0.3)
+        spec_x = cx - int(head_r * 0.25)  # 偏左（头中心x就是cx）
+        spec_y = head_cy - int(head_r * 0.3)   # 偏上
+        spec_r = max(1, head_r // 4)  # 高光半径（很小的点）
+        for sy in range(max(0, spec_y - spec_r), min(H, spec_y + spec_r + 1)):
+            for sx in range(max(0, spec_x - spec_r), min(W, spec_x + spec_r + 1)):
+                dx_sp, dy_sp = sx - spec_x, sy - spec_y
+                dist_sq = dx_sp*dx_sp + dy_sp*dy_sp
+                if dist_sq <= spec_r * spec_r:
+                    r_sp, g_sp, b_sp, a_sp = canvas[sy][sx]
+                    if a_sp > 0:  # 只在已有像素上叠加
+                        # 高光强度：中心最强，边缘衰减
+                        intensity = 1.0 - (dist_sq / max(1, spec_r * spec_r))
+                        boost = int(35 * intensity)
+                        canvas[sy][sx] = (
+                            min(255, r_sp + boost + 8),  # 偏暖
+                            min(255, g_sp + boost + 5),
+                            min(255, b_sp + boost),
+                            a_sp
+                        )
+
         # ---- v0.3.13: 地面阴影投射 — 椭圆形渐变阴影增强空间感 ----
         # 在角色脚底位置绘制一个椭圆形半透明阴影，模拟地面投影
         # 阴影宽度约等于身体宽度+margin，高度很扁（透视压缩）
