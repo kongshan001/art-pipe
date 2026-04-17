@@ -3,6 +3,7 @@
 ArtPipe API v0.3.0 - AI 2D Game Character Asset Generation
 API-First: POST /api/generate → 完整引擎就绪美术资产包
 v0.3 新增: AI图像生成 (render_mode=ai/hybrid)
+v0.3.17: XSS修复(html.escape) + ThreadingHTTPServer并发支持
 
 Usage:
     python3 app.py [port]
@@ -19,10 +20,12 @@ Endpoints:
 import json
 import sys
 import os
+import html as html_module
 import traceback
 import base64
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +36,11 @@ from artpipe.exporter import AssetExporter
 
 # ---- In-memory store for generated assets (production: use Redis/DB) ----
 asset_store = {}
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """支持并发请求的HTTP服务器（每个请求独立线程）"""
+    daemon_threads = True
 
 
 class ArtPipeAPI(BaseHTTPRequestHandler):
@@ -214,13 +222,23 @@ class ArtPipeAPI(BaseHTTPRequestHandler):
             ai_section = f"""
 <div style="margin-top:24px;padding-top:16px;border-top:1px solid #333;">
 <h3>🎨 AI Generated Image</h3>
-<p><b>Backend:</b> {ai_img.get('backend','')} | <b>Time:</b> {ai_img.get('generation_time','')}s | <b>Size:</b> {ai_img.get('size',0)//1024}KB</p>
-<img src="data:image/{ai_img.get('format','jpeg').lower()};base64,{ai_img.get('image_base64','')}" 
+<p><b>Backend:</b> {html_module.escape(str(ai_img.get('backend','')))} | <b>Time:</b> {html_module.escape(str(ai_img.get('generation_time','')))}s | <b>Size:</b> {ai_img.get('size',0)//1024}KB</p>
+<img src="data:image/{html_module.escape(ai_img.get('format','jpeg').lower())};base64,{ai_img.get('image_base64','')}" 
      style="image-rendering:auto;border:2px solid #333;border-radius:8px;max-width:512px;" alt="ai-generated">
 </div>"""
         
+        # v0.3.17: XSS修复 — 所有用户可控字段用html.escape转义
+        safe_id = html_module.escape(char_id)
+        safe_prompt = html_module.escape(char.get("prompt", ""))
+        safe_style = html_module.escape(char.get("style_name", ""))
+        safe_type = html_module.escape(char.get("char_type_name", ""))
+        safe_seed = html_module.escape(str(char.get("seed", "")))
+        safe_mode = html_module.escape(char.get('render_mode', 'procedural').upper())
+        safe_anims = ", ".join(html_module.escape(a) for a in char.get("animations", {}).keys())
+        safe_exports = ", ".join(html_module.escape(e) for e in char.get("exports", {}).keys())
+        
         html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>ArtPipe Preview - {char_id}</title>
+<html><head><meta charset="utf-8"><title>ArtPipe Preview - {safe_id}</title>
 <style>
 body {{ background:#1a1a2e; color:#eee; font-family:system-ui; display:flex; justify-content:center; padding:40px; }}
 .card {{ background:#16213e; border-radius:12px; padding:24px; max-width:700px; }}
@@ -232,16 +250,16 @@ img {{ image-rendering:pixelated; border:2px solid #333; border-radius:8px; max-
 .badge-proc {{ background:#0f3460;color:#53a8b6; }}
 </style></head><body>
 <div class="card">
-<h2>ArtPipe Preview <span class="badge {'badge-ai' if ai_img else 'badge-proc'}">{char.get('render_mode','procedural').upper()}</span></h2>
-<p><b>Prompt:</b> {char.get("prompt","")}</p>
-<p><b>Style:</b> {char.get("style_name","")} | <b>Type:</b> {char.get("char_type_name","")} | <b>Seed:</b> {char.get("seed","")}</p>
+<h2>ArtPipe Preview <span class="badge {'badge-ai' if ai_img else 'badge-proc'}">{safe_mode}</span></h2>
+<p><b>Prompt:</b> {safe_prompt}</p>
+<p><b>Style:</b> {safe_style} | <b>Type:</b> {safe_type} | <b>Seed:</b> {safe_seed}</p>
 <h3>SpriteSheet (Procedural)</h3>
 <img src="data:image/png;base64,{png_b64}" alt="spritesheet">
 {ai_section}
 <div class="info">
-<p>Animations: {", ".join(char.get("animations",{}).keys())}</p>
+<p>Animations: {safe_anims}</p>
 <p>Palette: {char.get("palette",[])}</p>
-<p>Exports: {", ".join(char.get("exports",{}).keys())}</p>
+<p>Exports: {safe_exports}</p>
 </div></div></body></html>"""
         
         self.send_response(200)
@@ -321,7 +339,8 @@ AI-Powered 2D Game Character Asset Generation
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
-    server = HTTPServer(("0.0.0.0", port), ArtPipeAPI)
+    # v0.3.17: ThreadingHTTPServer 支持并发请求
+    server = ThreadingHTTPServer(("0.0.0.0", port), ArtPipeAPI)
     print(f"ArtPipe API v0.3.0 | http://localhost:{port}")
     print(f"POST /api/generate  |  prompt -> assets (procedural + AI)")
     try:

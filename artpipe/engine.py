@@ -354,7 +354,9 @@ class CharacterEngine:
         
         cols = 8
         # v0.3.10: 传入frame_map用于PNG tEXt元数据嵌入
-        spritesheet_png = create_spritesheet(all_frames, cols, self.CANVAS_W, self.CANVAS_H, frame_map=frame_map)
+        # v0.3.17: padding=1 帧间1px透明间距，防止游戏引擎纹理渗透
+        spritesheet_png = create_spritesheet(all_frames, cols, self.CANVAS_W, self.CANVAS_H,
+                                             frame_map=frame_map, padding=1)
         
         result["spritesheet"] = {
             "png_base64": self._to_base64(spritesheet_png),
@@ -363,6 +365,7 @@ class CharacterEngine:
             "rows": (len(all_frames) + cols - 1) // cols,
             "frame_width": self.CANVAS_W,
             "frame_height": self.CANVAS_H,
+            "padding": 1,
             "frame_map": frame_map,
         }
         

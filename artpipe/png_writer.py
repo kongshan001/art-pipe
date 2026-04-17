@@ -192,28 +192,33 @@ def create_png(width, height, pixels, metadata=None):
     return sig + ihdr + text_chunks + idat + iend
 
 
-def create_spritesheet(frames, cols, frame_w, frame_h, frame_map=None):
+def create_spritesheet(frames, cols, frame_w, frame_h, frame_map=None, padding=0):
     """
     frames: list of 2D pixel arrays (each is list of rows of RGBA tuples)
     cols: 精灵表列数
     frame_w, frame_h: 单帧尺寸
     frame_map: 可选dict，动画名称→{start, count}的映射，
                将作为tEXt chunk嵌入PNG元数据
+    padding: 帧间透明间距(px)，防止游戏引擎纹理渗透(bleeding)，默认0(无间距)
     Returns: PNG bytes of the spritesheet
     v0.3.10: 使用自适应行过滤 + 嵌入frame_map元数据
+    v0.3.17: padding参数，帧间留padding像素透明间隔
     """
     rows_count = (len(frames) + cols - 1) // cols
-    sheet_w = cols * frame_w
-    sheet_h = rows_count * frame_h
+    # 每帧占位 = 帧宽/高 + 间距; 额外加一圈外围间距
+    cell_w = frame_w + padding
+    cell_h = frame_h + padding
+    sheet_w = cols * cell_w + padding       # 左侧1×padding + 每列后padding
+    sheet_h = rows_count * cell_h + padding  # 顶部1×padding + 每行后padding
 
-    # 使用按帧行复制，避免逐像素 Python 循环
+    # 全透明画布（默认就是全0即rgba(0,0,0,0)）
     sheet = [[(0, 0, 0, 0)] * sheet_w for _ in range(sheet_h)]
 
     for frame_idx, frame in enumerate(frames):
         col_idx = frame_idx % cols
         row_idx = frame_idx // cols
-        x_offset = col_idx * frame_w
-        y_offset = row_idx * frame_h
+        x_offset = col_idx * cell_w + padding  # 左边距 + 列偏移
+        y_offset = row_idx * cell_h + padding  # 顶边距 + 行偏移
 
         # 逐行复制整帧数据到精灵表
         for fy in range(frame_h):
@@ -225,20 +230,23 @@ def create_spritesheet(frames, cols, frame_w, frame_h, frame_map=None):
     # 构建元数据
     metadata = None
     if frame_map:
+        sheet_meta = {
+            "width": sheet_w,
+            "height": sheet_h,
+            "frameWidth": frame_w,
+            "frameHeight": frame_h,
+            "cols": cols,
+            "totalFrames": len(frames),
+        }
+        if padding > 0:
+            sheet_meta["padding"] = padding
         metadata = {
             "frameMap": json.dumps({
                 "frames": {
                     anim: {"start": info["start"], "count": info["count"]}
                     for anim, info in frame_map.items()
                 },
-                "sheet": {
-                    "width": sheet_w,
-                    "height": sheet_h,
-                    "frameWidth": frame_w,
-                    "frameHeight": frame_h,
-                    "cols": cols,
-                    "totalFrames": len(frames),
-                }
+                "sheet": sheet_meta,
             }, separators=(',', ':')),
         }
 
