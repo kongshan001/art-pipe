@@ -157,6 +157,26 @@ CHAR_TYPES = {
     },
 }
 
+# v0.3.11: 发型配置 — 每个角色类型可选的发型池
+# hair_styles: 该类型可选的发型列表，生成时根据 seed 随机选择
+#   "short"     = 短发（头顶薄层）
+#   "medium"    = 中发（覆盖头顶+侧面）
+#   "long"      = 长发（延伸到肩部+背后）
+#   "spiky"     = 刺猬头（多个三角尖刺）
+#   "ponytail"  = 马尾（头顶+单根马尾垂下）
+#   "mohawk"    = 莫西干（中央一条竖起的发型）
+#   "bald"      = 光头（不画头发）
+#   "side_part" = 偏分（一侧多一侧少的刘海）
+HAIR_STYLES = {
+    "warrior": ["short", "medium", "spiky", "mohawk"],
+    "mage": ["long", "medium", "ponytail"],
+    "archer": ["short", "medium", "side_part", "ponytail"],
+    "rogue": ["short", "spiky", "side_part"],
+    "healer": ["long", "medium", "ponytail", "side_part"],
+    "monster": ["spiky", "bald"],
+    "npc": ["short", "medium", "side_part", "long"],
+}
+
 
 class CharacterEngine:
     """服务端角色生成引擎"""
@@ -269,7 +289,7 @@ class CharacterEngine:
             )
         
         # 程序化渲染（ai模式也做，保证spritesheet可用）
-        animations = self._render_all_frames(rng, style_cfg, type_cfg, base_palette)
+        animations = self._render_all_frames(rng, style_cfg, type_cfg, base_palette, ct)
         skeleton = self._generate_skeleton(type_cfg, base_palette)
         
         # 构建返回数据
@@ -460,9 +480,15 @@ class CharacterEngine:
 
         return result
 
-    def _render_all_frames(self, rng, style_cfg, type_cfg, palette):
-        """渲染7种动画的帧（v0.3.2: 新增jump跳跃动画）"""
+    def _render_all_frames(self, rng, style_cfg, type_cfg, palette, char_type_key="warrior"):
+        """渲染7种动画的帧（v0.3.11: 传入char_type_key用于发型选择）"""
         animations = {}
+        
+        # v0.3.11: 在所有帧之前一次性选择发型和纹理（保证帧间一致性）
+        hair_pool = HAIR_STYLES.get(char_type_key, ["short", "medium"])
+        hair_style = hair_pool[rng.int_range(0, len(hair_pool) - 1)]
+        texture_patterns = ["solid", "horizontal_stripe", "checkerboard", "diamond", "v_stripe"]
+        cloth_texture = texture_patterns[rng.int_range(0, len(texture_patterns) - 1)]
         
         anim_configs = {
             "idle":   {"frames": 4},
@@ -482,7 +508,7 @@ class CharacterEngine:
                 # 计算当前帧的肢体姿态参数
                 pose = self._calc_pose(anim_name, t)
                 # 每帧独立渲染（含肢体偏移）
-                frame = self._render_character(rng, style_cfg, type_cfg, palette, f, anim_name, pose)
+                frame = self._render_character(rng, style_cfg, type_cfg, palette, f, anim_name, pose, char_type_key, hair_style, cloth_texture)
                 # 后处理：特殊效果
                 if anim_name == "hurt" and int(t * 4) % 2 == 0:
                     # 受击白闪效果
@@ -674,8 +700,8 @@ class CharacterEngine:
         
         return pose
 
-    def _render_character(self, rng, style_cfg, type_cfg, palette, frame_idx, anim, pose=None):
-        """渲染单帧角色像素数据（v0.3.9: 增加配件系统+颜色分层）"""
+    def _render_character(self, rng, style_cfg, type_cfg, palette, frame_idx, anim, pose=None, char_type_key="warrior", hair_style="short", cloth_texture="solid"):
+        """渲染单帧角色像素数据（v0.3.11: 多发型系统+服装纹理）"""
         W, H = self.CANVAS_W, self.CANVAS_H
         ps = style_cfg["pixel_size"]
         
@@ -851,14 +877,177 @@ class CharacterEngine:
                                     old_a
                                 )
         
-        # 头发
-        for y in range(max(0, head_cy - head_r - ps), head_cy):
-            for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
-                dx, dy = x - cx, y - head_cy
-                if dx*dx + (dy+ps)*(dy+ps) <= (head_r+ps)*(head_r+ps) and dy < -head_r//2:
-                    canvas[y][x] = (*hair_color, 255)
+        # ---- v0.3.11: 多发型渲染系统 ----
+        # 发型由 _render_all_frames 在帧循环前一次性选定
+        # 头发深色（阴影层）
+        hair_dark = (max(0, hair_color[0]-40), max(0, hair_color[1]-40), max(0, hair_color[2]-40))
+        # 头发高光
+        hair_light = (min(255, hair_color[0]+30), min(255, hair_color[1]+30), min(255, hair_color[2]+30))
+
+        if hair_style != "bald":
+            if hair_style == "short":
+                # 短发：头顶薄层（覆盖头部上半部分）
+                for y in range(max(0, head_cy - head_r - ps), head_cy - head_r//3):
+                    for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
+                        dx, dy = x - cx, y - head_cy
+                        if dx*dx + (dy+ps)*(dy+ps) <= (head_r+ps)*(head_r+ps) and dy < -head_r//3:
+                            canvas[y][x] = (*hair_color, 255)
+                # 刘海高光
+                hl_y = max(0, head_cy - head_r - ps + 1)
+                for x in range(max(0, cx - head_r//2), min(W, cx + head_r//2)):
+                    if 0 <= hl_y < H and canvas[hl_y][x][3] == 0:
+                        canvas[hl_y][x] = (*hair_light, 255)
+
+            elif hair_style == "medium":
+                # 中发：覆盖头顶+两侧到耳朵位置
+                for y in range(max(0, head_cy - head_r - ps), head_cy + head_r//4):
+                    for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
+                        dx, dy = x - cx, y - head_cy
+                        # 椭圆形头发覆盖
+                        hair_rx = head_r + ps
+                        hair_ry = head_r + ps
+                        if dx*dx + (dy+ps)*(dy+ps) <= hair_rx*hair_ry and dy < 0:
+                            canvas[y][x] = (*hair_color, 255)
+                        # 两侧延伸
+                        elif abs(dy) <= head_r//3 and abs(dx) >= head_r - ps and abs(dx) <= head_r + ps:
+                            canvas[y][x] = (*hair_dark, 255)
+                # 顶部高光弧线
+                hl_y = max(0, head_cy - head_r - ps + 1)
+                for x in range(max(0, cx - head_r//2), min(W, cx + head_r//2)):
+                    if 0 <= hl_y < H:
+                        dx = x - cx
+                        if dx*dx <= (head_r//2)*(head_r//2):
+                            canvas[hl_y][x] = (*hair_light, 255)
+
+            elif hair_style == "long":
+                # 长发：覆盖头顶+延伸到肩部背后
+                # 头顶部分
+                for y in range(max(0, head_cy - head_r - ps), head_cy + head_r//3):
+                    for x in range(max(0, cx - head_r - ps*2), min(W, cx + head_r + ps*2)):
+                        dx, dy = x - cx, y - head_cy
+                        hair_rx = head_r + ps*2
+                        hair_ry = head_r + ps
+                        if dx*dx + (dy+ps)*(dy+ps) <= hair_rx*hair_ry and dy < 0:
+                            canvas[y][x] = (*hair_color, 255)
+                # 两侧长发垂下到肩部
+                hair_drop_top = head_cy
+                hair_drop_bot = min(H, body_top + body_h // 3)
+                for y in range(hair_drop_top, hair_drop_bot):
+                    # 左侧
+                    for x in range(max(0, cx - head_r - ps*2), max(0, cx - head_r + ps)):
+                        if 0 <= x < W:
+                            canvas[y][x] = (*hair_dark, 255)
+                    # 右侧
+                    for x in range(min(W, cx + head_r - ps), min(W, cx + head_r + ps*2)):
+                        if 0 <= x < W:
+                            canvas[y][x] = (*hair_dark, 255)
+                # 顶部高光
+                hl_y = max(0, head_cy - head_r - ps + 1)
+                for x in range(max(0, cx - head_r//2), min(W, cx + head_r//2)):
+                    if 0 <= hl_y < H:
+                        dx = x - cx
+                        if dx*dx <= (head_r//2)*(head_r//2):
+                            canvas[hl_y][x] = (*hair_light, 255)
+
+            elif hair_style == "spiky":
+                # 刺猬头：多个三角尖刺从头顶伸出
+                num_spikes = 5
+                spike_base_y = head_cy - head_r + ps
+                for i in range(num_spikes):
+                    # 每根刺的X位置均匀分布在头顶
+                    spike_x = cx - head_r + int((i + 0.5) * (2 * head_r) / num_spikes)
+                    spike_h = head_r // 2 + (i % 2) * (head_r // 3)  # 交替高低
+                    spike_w = max(ps, 2)
+                    # 画三角形尖刺
+                    for dy in range(spike_h):
+                        tip_y = spike_base_y - spike_h + dy
+                        half_w = max(1, (spike_h - dy) * spike_w // spike_h)
+                        for dx in range(-half_w, half_w + 1):
+                            px = spike_x + dx
+                            if 0 <= tip_y < H and 0 <= px < W:
+                                canvas[tip_y][px] = (*hair_color, 255)
+                    # 尖端高光
+                    tip_y = spike_base_y - spike_h
+                    if 0 <= tip_y < H and 0 <= spike_x < W:
+                        canvas[tip_y][spike_x] = (*hair_light, 255)
+                # 底部连接层（头顶填充）
+                for y in range(max(0, head_cy - head_r - ps), spike_base_y):
+                    for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
+                        dx, dy = x - cx, y - head_cy
+                        if dx*dx + (dy+ps)*(dy+ps) <= (head_r+ps)*(head_r+ps) and dy < -head_r//3:
+                            canvas[y][x] = (*hair_color, 255)
+
+            elif hair_style == "ponytail":
+                # 马尾：头顶覆盖 + 一根辫子垂到背后
+                # 头顶部分（类似medium）
+                for y in range(max(0, head_cy - head_r - ps), head_cy):
+                    for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
+                        dx, dy = x - cx, y - head_cy
+                        if dx*dx + (dy+ps)*(dy+ps) <= (head_r+ps)*(head_r+ps) and dy < -head_r//3:
+                            canvas[y][x] = (*hair_color, 255)
+                # 马尾辫：从头顶右侧偏后延伸向下，带轻微波浪
+                tail_start_x = cx + head_r // 2
+                tail_start_y = head_cy - head_r + ps
+                tail_len = min(H - tail_start_y, body_h + leg_h // 2)
+                for dy in range(tail_len):
+                    wave = int(math.sin(dy * 0.15 + frame_idx * 0.2) * ps)
+                    ty = tail_start_y + dy
+                    for dx in range(-ps, ps + 1):
+                        tx = tail_start_x + wave + dx
+                        if 0 <= ty < H and 0 <= tx < W:
+                            canvas[ty][tx] = (*hair_dark, 255)
+                    # 马尾高光线
+                    if 0 <= ty < H and 0 <= tail_start_x + wave < W:
+                        canvas[ty][tail_start_x + wave] = (*hair_light, 255)
+                # 头顶高光
+                hl_y = max(0, head_cy - head_r - ps + 1)
+                for x in range(max(0, cx - head_r//3), min(W, cx + head_r//3)):
+                    if 0 <= hl_y < H:
+                        canvas[hl_y][x] = (*hair_light, 255)
+
+            elif hair_style == "mohawk":
+                # 莫西干：中央一条竖起的发型
+                mohawk_w = max(ps, 3)
+                mohawk_h = head_r + ps * 4
+                mohawk_base_y = head_cy - head_r + ps
+                for dy in range(mohawk_h):
+                    y_pos = mohawk_base_y - mohawk_h + dy
+                    # 逐渐收窄
+                    width_here = max(1, mohawk_w - int(dy * mohawk_w / mohawk_h))
+                    for dx in range(-width_here, width_here + 1):
+                        px = cx + dx
+                        if 0 <= y_pos < H and 0 <= px < W:
+                            canvas[y_pos][px] = (*hair_color, 255)
+                # 顶部尖端高光
+                tip_y = mohawk_base_y - mohawk_h
+                if 0 <= tip_y < H:
+                    canvas[tip_y][cx] = (*hair_light, 255)
+
+            elif hair_style == "side_part":
+                # 偏分：一侧多一侧少的刘海
+                # 右侧多（覆盖到眉毛）
+                for y in range(max(0, head_cy - head_r - ps), head_cy):
+                    for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
+                        dx, dy = x - cx, y - head_cy
+                        if dx*dx + (dy+ps)*(dy+ps) <= (head_r+ps)*(head_r+ps) and dy < -head_r//3:
+                            canvas[y][x] = (*hair_color, 255)
+                        # 右侧额外刘海（延伸到更低位置）
+                        elif 0 <= dy and dy <= head_r//3 and dx >= head_r//4 and dx <= head_r + ps:
+                            if dx*dx + dy*dy <= (head_r+ps)*(head_r+ps):
+                                canvas[y][x] = (*hair_dark, 255)
+                # 偏分线（头顶的分界线）
+                part_y = max(0, head_cy - head_r - ps + 1)
+                part_x = cx + head_r // 3
+                if 0 <= part_y < H and 0 <= part_x < W:
+                    canvas[part_y][part_x] = (*skin, 255)
+                # 高光
+                for x in range(max(0, cx - head_r//3), min(W, cx + head_r//3)):
+                    if 0 <= part_y < H:
+                        canvas[part_y][x] = (*hair_light, 255)
         
-        # ---- 绘制身体（v0.3.9: 颜色分层渲染 — 深色下摆+高光胸部） ----
+        # ---- 绘制身体（v0.3.11: 颜色分层+服装纹理图案渲染） ----
+        # 纹理由 _render_all_frames 在帧循环前一次性选定
+        
         for y in range(body_top, min(H, body_bot)):
             # v0.3.9: 纵向颜色渐变 — 顶部高光、底部深色
             if body_bot > body_top:
@@ -881,10 +1070,38 @@ class CharacterEngine:
                     fx_color = (max(0, row_color[0]-10), max(0, row_color[1]-10), max(0, row_color[2]-10))
                 else:
                     fx_color = row_color
-                canvas[y][x] = (*fx_color, 255)
+                
+                # v0.3.11: 服装纹理图案叠加
+                use_accent = False
+                local_x = x - (cx - body_draw_w//2)  # 相对身体左边缘的X坐标
+                local_y = y - body_top               # 相对身体顶部的Y坐标
+                
+                if cloth_texture == "horizontal_stripe":
+                    # 横条纹：每隔2行交替颜色
+                    if local_y % 4 < 2 and abs(x - cx) > ps:
+                        use_accent = True
+                elif cloth_texture == "checkerboard":
+                    # 棋盘格：2x2像素方块交替
+                    if (local_x // 2 + local_y // 2) % 2 == 0 and abs(x - cx) > ps:
+                        use_accent = True
+                elif cloth_texture == "diamond":
+                    # 菱形图案：交叉斜线形成菱形
+                    if (local_x + local_y) % 4 < 1 or (local_x - local_y) % 4 < 1:
+                        if abs(x - cx) > ps:
+                            use_accent = True
+                elif cloth_texture == "v_stripe":
+                    # 竖条纹：每隔3像素交替颜色
+                    if local_x % 6 < 2 and abs(x - cx) > ps:
+                        use_accent = True
+                # "solid" 不添加额外纹理
+                
+                if use_accent:
+                    canvas[y][x] = (*accent, 255)
+                else:
+                    canvas[y][x] = (*fx_color, 255)
                 # 中心装饰线（用accent高光色）
                 if abs(x - cx) <= ps:
-                    canvas[y][x] = (*accent, 255)
+                    canvas[y][x] = (*accent_light, 255)
         
         # ---- 绘制腿（v0.3.1: 独立肢体偏移） ----
         leg_w = body_w // 3
