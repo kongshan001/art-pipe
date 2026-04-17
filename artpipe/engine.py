@@ -2,6 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
+v0.3.30: HSV色温偏移(高光/阴影色彩分层升级为真正的HSV色相旋转)+修复垂直抖动矩阵为2D索引
 v0.3.26: 关节缝隙阴影(Joint Crease AO,颈部/腰部/肩部衔接处渐变暗化增强部件分离感)
 v0.3.24: 手部渲染(手臂末端添加椭圆形手掌细节，增加角色完成度)
 v0.3.23: 调色板色彩快照(Palette Snap,后处理色彩量化到调色板色阶消除连续色调噪点)+头部镜面高光(Specular Highlight,圆形衰减高光点增强面部立体感)
@@ -992,19 +993,95 @@ class CharacterEngine:
         hair_color = palette[3]
         outline = style_cfg.get("outline_color")
         
-        # v0.3.9→v0.3.25: 颜色分层 — 使用HSV色相偏移(Hue Shift)技术
-        # 像素美术最佳实践：高光偏暖色(红/黄通道微增，蓝通道微减)，
-        #                     阴影偏冷色(蓝通道微增，红/黄通道微减)
-        # 这比简单的RGB加减法更真实——真实光照中，直射光偏暖，散射光/阴影偏冷
+        # v0.3.9→v0.3.30: 颜色分层 — 使用HSV色相偏移(Hue Shift)技术
+        # 像素美术最佳实践：高光偏暖色(色相向红/黄方向旋转)，
+        #                     阴影偏冷色(色相向蓝方向旋转)
+        # v0.3.30: 升级为真正的HSV色相旋转，替代之前的RGB通道加减法
+        # 在HSV空间中旋转色相更符合色彩感知理论：
+        #   - 暖偏移：色相向黄(60°)方向旋转，同时微提亮度和降低饱和度(模拟光照退色)
+        #   - 冷偏移：色相向蓝(240°)方向旋转，同时微降亮度和微增饱和度(模拟阴影凝聚)
         # 参考技术：Hue Shifting / Color Temperature in Pixel Art (slynyrd, 2024)
         def _warm_shift(color, amount):
-            """色相偏暖：模拟直射光（微增红+黄，微减蓝）"""
+            """色相偏暖：在HSV空间向黄色(60°)方向旋转色相，模拟直射暖光"""
             r, g, b = color
-            return (min(255, r + amount + 3), min(255, g + amount + 1), min(255, b + max(0, amount - 4)))
+            # 转换到HSV
+            rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
+            mx, mn = max(rf, gf, bf), min(rf, gf, bf)
+            diff = mx - mn
+            if diff == 0:
+                h = 0
+            elif mx == rf:
+                h = (60 * ((gf - bf) / diff) + 360) % 360
+            elif mx == gf:
+                h = (60 * ((bf - rf) / diff) + 120) % 360
+            else:
+                h = (60 * ((rf - gf) / diff) + 240) % 360
+            s = 0 if mx == 0 else diff / mx
+            v = mx
+            # 暖偏移：色相向60°(黄)方向旋转，偏移量与amount成比例
+            # 计算到60°的最短距离
+            hue_target = 60  # 黄色
+            hue_diff = ((hue_target - h + 180) % 360) - 180
+            hue_shift = hue_diff * (amount / 80.0)  # amount/80 控制旋转强度
+            h = (h + hue_shift) % 360
+            # 微提亮度（模拟光照增亮）
+            v = min(1.0, v + amount / 200.0)
+            # 微降饱和度（高光区退色效果）
+            s = max(0.0, s - amount / 300.0)
+            # HSV → RGB
+            h = h % 360
+            c = v * s
+            x = c * (1 - abs((h / 60) % 2 - 1))
+            m = v - c
+            if h < 60:   rr, gg, bb = c, x, 0
+            elif h < 120: rr, gg, bb = x, c, 0
+            elif h < 180: rr, gg, bb = 0, c, x
+            elif h < 240: rr, gg, bb = 0, x, c
+            elif h < 300: rr, gg, bb = x, 0, c
+            else:         rr, gg, bb = c, 0, x
+            return (min(255, max(0, int((rr + m) * 255))),
+                    min(255, max(0, int((gg + m) * 255))),
+                    min(255, max(0, int((bb + m) * 255))))
+
         def _cool_shift(color, amount):
-            """色相偏冷：模拟阴影散射光（微增蓝，微减红）"""
+            """色相偏冷：在HSV空间向蓝色(240°)方向旋转色相，模拟阴影冷散射光"""
             r, g, b = color
-            return (max(0, r - int(amount * 0.4)), max(0, g - int(amount * 0.2)), max(0, b - amount))
+            rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
+            mx, mn = max(rf, gf, bf), min(rf, gf, bf)
+            diff = mx - mn
+            if diff == 0:
+                h = 0
+            elif mx == rf:
+                h = (60 * ((gf - bf) / diff) + 360) % 360
+            elif mx == gf:
+                h = (60 * ((bf - rf) / diff) + 120) % 360
+            else:
+                h = (60 * ((rf - gf) / diff) + 240) % 360
+            s = 0 if mx == 0 else diff / mx
+            v = mx
+            # 冷偏移：色相向240°(蓝)方向旋转
+            hue_target = 240  # 蓝色
+            hue_diff = ((hue_target - h + 180) % 360) - 180
+            hue_shift = hue_diff * (amount / 80.0)
+            h = (h + hue_shift) % 360
+            # 微降亮度（阴影区变暗）
+            v = max(0.0, v - amount / 200.0)
+            # 微增饱和度（阴影区色彩凝聚）
+            s = min(1.0, s + amount / 400.0)
+            # HSV → RGB
+            h = h % 360
+            c = v * s
+            x = c * (1 - abs((h / 60) % 2 - 1))
+            m = v - c
+            if h < 60:   rr, gg, bb = c, x, 0
+            elif h < 120: rr, gg, bb = x, c, 0
+            elif h < 180: rr, gg, bb = 0, c, x
+            elif h < 240: rr, gg, bb = 0, x, c
+            elif h < 300: rr, gg, bb = x, 0, c
+            else:         rr, gg, bb = c, 0, x
+            return (min(255, max(0, int((rr + m) * 255))),
+                    min(255, max(0, int((gg + m) * 255))),
+                    min(255, max(0, int((bb + m) * 255))))
         body_dark = _cool_shift(body_color, 30)    # 阴影→偏冷蓝
         body_light = _warm_shift(body_color, 20)    # 高光→偏暖黄
         accent_dark = _cool_shift(accent, 25)
@@ -1518,8 +1595,10 @@ class CharacterEngine:
                 # 高光→原色过渡带（约20%身体高度）：50%位置开始抖动
                 blend = (vert_t - 0.2) / 0.2  # 0→1
                 local_y_body = y - body_top
-                local_x_body_ref = 0  # 用于抖动矩阵索引
-                threshold = dither_thresholds[local_y_body % 4][0] / 16.0
+                # v0.3.30: 修复抖动矩阵索引 — 使用完整的2D坐标(x,y)
+                # 之前只使用列0，导致垂直过渡带出现可见条纹
+                local_x_body_ref = (cx - body_draw_w // 2)  # 身体左边界x坐标
+                threshold = dither_thresholds[local_y_body % 4][(cx % 4)] / 16.0
                 if blend > threshold:
                     row_color = body_color
                 else:
@@ -1530,7 +1609,8 @@ class CharacterEngine:
                 # 原色→深色过渡带（约20%身体高度）
                 blend = (vert_t - 0.6) / 0.2  # 0→1
                 local_y_body = y - body_top
-                threshold = dither_thresholds[local_y_body % 4][0] / 16.0
+                # v0.3.30: 修复抖动矩阵索引 — 使用完整的2D坐标(x,y)
+                threshold = dither_thresholds[local_y_body % 4][(cx % 4)] / 16.0
                 if blend > threshold:
                     row_color = body_dark
                 else:
