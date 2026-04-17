@@ -328,7 +328,8 @@ class CharacterEngine:
             all_frames.extend(frames)
         
         cols = 8
-        spritesheet_png = create_spritesheet(all_frames, cols, self.CANVAS_W, self.CANVAS_H)
+        # v0.3.10: 传入frame_map用于PNG tEXt元数据嵌入
+        spritesheet_png = create_spritesheet(all_frames, cols, self.CANVAS_W, self.CANVAS_H, frame_map=frame_map)
         
         result["spritesheet"] = {
             "png_base64": self._to_base64(spritesheet_png),

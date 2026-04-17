@@ -1,2 +1,2 @@
 """ArtPipe - AI 2D Game Character Asset Generation Pipeline"""
-__version__ = "0.3.0"
+__version__ = "0.3.10"
