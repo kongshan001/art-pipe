@@ -1474,8 +1474,11 @@ class CharacterEngine:
                                 new_canvas[py][px] = color
             canvas = new_canvas
         
-        # ---- 明暗层次（v0.3.4: 双轴光照+深度阴影增强立体感） ----
+        # ---- 明暗层次（v0.3.14: 双轴光照+色相偏移+深度阴影增强立体感） ----
         # 光源设定：左上方主光源 + 顶部环境光
+        # v0.3.14改进：高光区域偏暖色（红+绿微增、蓝微减），
+        #              阴影区域偏冷色（蓝微增、红+绿微减），
+        #              模拟真实环境色温变化，让角色更有层次感
         for y in range(H):
             for x in range(W):
                 r, g, b, a = canvas[y][x]
@@ -1504,9 +1507,28 @@ class CharacterEngine:
                     shadow += int(v_bias * 8)
                 
                 if lift > 0 or shadow > 0:
-                    r2 = min(255, max(0, r + lift - shadow))
-                    g2 = min(255, max(0, g + lift - shadow))
-                    b2 = min(255, max(0, b + lift - shadow))
+                    # 基础亮度调整
+                    r2 = r + lift - shadow
+                    g2 = g + lift - shadow
+                    b2 = b + lift - shadow
+                    
+                    # v0.3.14: 色相偏移（hue shift）— 高光偏暖，阴影偏冷
+                    # 高光区域：微增红+绿（暖色调），微减蓝
+                    if lift > 0:
+                        warm = lift * 0.3  # 暖色偏移量
+                        r2 += int(warm)
+                        g2 += int(warm * 0.5)
+                        b2 -= int(warm * 0.3)
+                    # 阴影区域：微增蓝（冷色调），微减红+绿
+                    if shadow > 0:
+                        cool = shadow * 0.25  # 冷色偏移量
+                        r2 -= int(cool * 0.4)
+                        g2 -= int(cool * 0.2)
+                        b2 += int(cool)
+                    
+                    r2 = min(255, max(0, int(r2)))
+                    g2 = min(255, max(0, int(g2)))
+                    b2 = min(255, max(0, int(b2)))
                     canvas[y][x] = (r2, g2, b2, a)
         
         # ---- v0.3.13: 边缘环境光遮蔽（Edge AO）— 增强轮廓立体感 ----
@@ -1534,6 +1556,32 @@ class CharacterEngine:
                         if 0 <= ix < W and 0 <= iy < H and not ao_pass[iy][ix] and canvas[iy][ix][3] > 0:
                             r3, g3, b3, a3 = canvas[iy][ix]
                             canvas[iy][ix] = (max(0, r3-7), max(0, g3-7), max(0, b3-7), a3)
+        
+        # ---- v0.3.14: 边缘背光（Rim Lighting）— 增强轮廓分离和立体感 ----
+        # 在角色阴影侧（右侧）的轮廓边缘添加1px暖色高光，
+        # 模拟背光散射效果，让角色从背景中"弹出"
+        # 原理：真实光照中，物体背光侧边缘会有光从后方散射形成的亮边
+        # 实现：在角色右侧（x > cx）的不透明像素中，找紧邻透明区域的边缘像素，
+        #       微增亮度（+20）并偏暖色（+8红），形成微妙的轮廓光
+        if outline:  # 只在有描边的风格中启用（非 western 风格）
+            for y in range(1, H - 1):
+                for x in range(cx, W - 1):  # 只处理右半部分（阴影侧）
+                    r, g, b, a = canvas[y][x]
+                    if a == 0:
+                        continue
+                    # 检查是否为右侧边缘（右邻居是透明或出界）
+                    is_right_edge = (x + 1 >= W or canvas[y][x + 1][3] == 0)
+                    if is_right_edge:
+                        # 边缘背光：微增亮度 + 偏暖色
+                        # 根据垂直位置调整强度（顶部更强=头顶光散射更明显）
+                        v_pos = y / H  # 0=顶, 1=底
+                        rim_strength = max(8, int(22 * (1.0 - v_pos * 0.6)))
+                        canvas[y][x] = (
+                            min(255, r + rim_strength + 5),  # 红色额外+5偏暖
+                            min(255, g + rim_strength),
+                            min(255, b + max(0, rim_strength - 4)),  # 蓝色少增一点
+                            a
+                        )
         
         # ---- v0.3.13: 地面阴影投射 — 椭圆形渐变阴影增强空间感 ----
         # 在角色脚底位置绘制一个椭圆形半透明阴影，模拟地面投影
