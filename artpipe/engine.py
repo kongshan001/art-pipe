@@ -84,8 +84,13 @@ PALETTES = {
 
 # ---- 角色类型配置 ----
 # v0.3.7: 增加面部表情(face_type)和体型比例(body_ratio/leg_ratio/arm_ratio)
+# v0.3.9: 增加可选配件池(accessories) — 每次生成时随机选取0~2个配件
 # face_type: "serious"=严肃(横线嘴+平眉), "cute"=可爱(微笑+弯眉),
 #            "fierce"=凶猛(怒眉+龇牙), "gentle"=温柔(微笑+淡眉), "plain"=普通
+# accessories: 该类型可选的配件列表，绘制时根据 seed 随机挑选
+#   belt=腰带(身体中部横条纹), shoulder_pads=肩甲(肩膀处方形),
+#   scarf=围巾(脖子处飘逸带), earing=耳环(头部侧面小点),
+#   belt_pouch=腰包(侧面小方块), collar=衣领(脖子处环绕线)
 CHAR_TYPES = {
     "warrior": {
         "name": "战士", "head_ratio": 0.18, "body_w": 0.35,
@@ -94,6 +99,7 @@ CHAR_TYPES = {
         "body_ratio": 1.15,  # 宽壮躯干
         "leg_ratio": 0.90,   # 短粗腿
         "arm_ratio": 1.10,   # 粗壮手臂
+        "accessories": ["belt", "shoulder_pads", "scarf", "belt_pouch"],
     },
     "mage": {
         "name": "法师", "head_ratio": 0.20, "body_w": 0.28,
@@ -102,6 +108,7 @@ CHAR_TYPES = {
         "body_ratio": 0.90,  # 纤细身体
         "leg_ratio": 1.15,   # 修长腿
         "arm_ratio": 0.95,   # 细长手臂
+        "accessories": ["scarf", "collar", "earing"],
     },
     "archer": {
         "name": "弓箭手", "head_ratio": 0.19, "body_w": 0.25,
@@ -110,6 +117,7 @@ CHAR_TYPES = {
         "body_ratio": 0.92,  # 精瘦身体
         "leg_ratio": 1.10,   # 长腿（灵活）
         "arm_ratio": 1.15,   # 长臂（拉弓）
+        "accessories": ["belt", "belt_pouch", "scarf", "earing"],
     },
     "rogue": {
         "name": "盗贼", "head_ratio": 0.17, "body_w": 0.22,
@@ -118,6 +126,7 @@ CHAR_TYPES = {
         "body_ratio": 0.85,  # 窄小身材
         "leg_ratio": 1.10,   # 灵活长腿
         "arm_ratio": 1.05,   # 匀称手臂
+        "accessories": ["belt", "earing", "scarf", "belt_pouch"],
     },
     "healer": {
         "name": "治疗师", "head_ratio": 0.20, "body_w": 0.30,
@@ -126,6 +135,7 @@ CHAR_TYPES = {
         "body_ratio": 0.95,  # 正常体型
         "leg_ratio": 1.00,   # 正常腿
         "arm_ratio": 0.95,   # 纤细手臂
+        "accessories": ["collar", "scarf", "earing"],
     },
     "monster": {
         "name": "怪物", "head_ratio": 0.30, "body_w": 0.40,
@@ -134,6 +144,7 @@ CHAR_TYPES = {
         "body_ratio": 1.20,  # 宽大躯干
         "leg_ratio": 0.80,   # 粗短腿
         "arm_ratio": 1.20,   # 粗壮长臂
+        "accessories": ["shoulder_pads"],
     },
     "npc": {
         "name": "NPC", "head_ratio": 0.20, "body_w": 0.26,
@@ -142,6 +153,7 @@ CHAR_TYPES = {
         "body_ratio": 1.00,  # 标准体型
         "leg_ratio": 1.00,   # 标准腿
         "arm_ratio": 1.00,   # 标准手臂
+        "accessories": ["scarf", "collar", "belt", "earing"],
     },
 }
 
@@ -662,7 +674,7 @@ class CharacterEngine:
         return pose
 
     def _render_character(self, rng, style_cfg, type_cfg, palette, frame_idx, anim, pose=None):
-        """渲染单帧角色像素数据（v0.3.1: 支持逐肢体姿态偏移）"""
+        """渲染单帧角色像素数据（v0.3.9: 增加配件系统+颜色分层）"""
         W, H = self.CANVAS_W, self.CANVAS_H
         ps = style_cfg["pixel_size"]
         
@@ -678,6 +690,25 @@ class CharacterEngine:
                 "body_scale_x": 1.0,
             }
         
+        # v0.3.9: 根据 seed 随机选择0~2个配件
+        available_acc = type_cfg.get("accessories", [])
+        chosen_acc = []
+        if available_acc:
+            # 洗牌后取前N个（N由seed决定）
+            acc_pool = list(available_acc)
+            for i in range(len(acc_pool) - 1, 0, -1):
+                j = rng.int_range(0, i)
+                acc_pool[i], acc_pool[j] = acc_pool[j], acc_pool[i]
+            # 随机选择0~2个（70%概率选1个，20%选2个，10%不选）
+            roll = rng.next()
+            if roll < 0.70:
+                n_acc = 1
+            elif roll < 0.90:
+                n_acc = 2
+            else:
+                n_acc = 0
+            chosen_acc = acc_pool[:n_acc]
+        
         # 创建空白画布 (RGBA)
         canvas = [[(0,0,0,0) for _ in range(W)] for _ in range(H)]
         
@@ -687,6 +718,12 @@ class CharacterEngine:
         accent = palette[2]
         hair_color = palette[3]
         outline = style_cfg.get("outline_color")
+        
+        # v0.3.9: 预计算颜色分层 — 深色/中间色/高光
+        body_dark = (max(0, body_color[0]-30), max(0, body_color[1]-30), max(0, body_color[2]-30))
+        body_light = (min(255, body_color[0]+20), min(255, body_color[1]+20), min(255, body_color[2]+20))
+        accent_dark = (max(0, accent[0]-25), max(0, accent[1]-25), max(0, accent[2]-25))
+        accent_light = (min(255, accent[0]+30), min(255, accent[1]+30), min(255, accent[2]+30))
         
         # 根据类型调整比例（v0.3.7: 应用体型比例差异化）
         head_r = int(H * type_cfg.get("head_ratio", 0.19) / 2)
@@ -820,11 +857,31 @@ class CharacterEngine:
                 if dx*dx + (dy+ps)*(dy+ps) <= (head_r+ps)*(head_r+ps) and dy < -head_r//2:
                     canvas[y][x] = (*hair_color, 255)
         
-        # ---- 绘制身体（v0.3.8: body_draw_w 支持呼吸缩放） ----
+        # ---- 绘制身体（v0.3.9: 颜色分层渲染 — 深色下摆+高光胸部） ----
         for y in range(body_top, min(H, body_bot)):
+            # v0.3.9: 纵向颜色渐变 — 顶部高光、底部深色
+            if body_bot > body_top:
+                vert_t = (y - body_top) / (body_bot - body_top)  # 0=顶 1=底
+            else:
+                vert_t = 0.5
+            # 上30%用高光色，中间40%用原色，下30%用深色
+            if vert_t < 0.3:
+                row_color = body_light
+            elif vert_t > 0.7:
+                row_color = body_dark
+            else:
+                row_color = body_color
+            
             for x in range(max(0, cx - body_draw_w//2), min(W, cx + body_draw_w//2)):
-                canvas[y][x] = (*body_color, 255)
-                # 中心装饰线
+                # v0.3.9: 横向也做微妙渐变（中心亮、边缘暗）
+                h_dist = abs(x - cx) / max(1, body_draw_w // 2)  # 0=中心 1=边缘
+                if h_dist > 0.7:
+                    # 边缘区域用略深色模拟侧面阴影
+                    fx_color = (max(0, row_color[0]-10), max(0, row_color[1]-10), max(0, row_color[2]-10))
+                else:
+                    fx_color = row_color
+                canvas[y][x] = (*fx_color, 255)
+                # 中心装饰线（用accent高光色）
                 if abs(x - cx) <= ps:
                     canvas[y][x] = (*accent, 255)
         
@@ -952,6 +1009,111 @@ class CharacterEngine:
                         canvas[halo_y][x] = (255, 230, 100, 180)
                     if halo_y+1 < H:
                         canvas[halo_y+1][x] = (255, 240, 150, 120)
+
+        # ---- v0.3.9: 随机配件渲染 ----
+        for acc in chosen_acc:
+            if acc == "belt":
+                # 腰带：身体中部的横向条纹（accent色+金属扣）
+                belt_y = body_top + body_h * 2 // 3
+                for x in range(max(0, cx - body_draw_w//2 - 1), min(W, cx + body_draw_w//2 + 1)):
+                    for dy2 in range(max(0, ps)):
+                        by = belt_y + dy2
+                        if 0 <= by < H:
+                            canvas[by][x] = (*accent_dark, 255)
+                # 腰带金属扣（中心亮点）
+                buckle_y = belt_y
+                for dy2 in range(ps):
+                    for dx2 in range(-ps, ps+1):
+                        bx = cx + dx2
+                        bby = buckle_y + dy2
+                        if 0 <= bx < W and 0 <= bby < H:
+                            canvas[bby][bx] = (*accent_light, 255)
+
+            elif acc == "shoulder_pads":
+                # 肩甲：肩膀两侧的方形护甲片
+                pad_w = max(ps*2, arm_w)
+                pad_h = max(ps*2, body_h // 5)
+                pad_y = body_top
+                # 左肩甲
+                for y in range(pad_y, min(H, pad_y + pad_h)):
+                    for x in range(max(0, cx - body_draw_w//2 - pad_w), min(W, cx - body_draw_w//2)):
+                        canvas[y][x] = (*accent, 255)
+                        # 肩甲内高光
+                        if (x - (cx - body_draw_w//2 - pad_w)) < ps and (y - pad_y) < ps:
+                            canvas[y][x] = (*accent_light, 255)
+                # 右肩甲
+                for y in range(pad_y, min(H, pad_y + pad_h)):
+                    for x in range(max(0, cx + body_draw_w//2), min(W, cx + body_draw_w//2 + pad_w)):
+                        canvas[y][x] = (*accent, 255)
+                        # 肩甲内高光
+                        if (cx + body_draw_w//2 + pad_w - x) < ps and (y - pad_y) < ps:
+                            canvas[y][x] = (*accent_light, 255)
+
+            elif acc == "scarf":
+                # 围巾：脖子处的飘逸带状物，轻微随风飘动
+                scarf_y_start = body_top - 1
+                scarf_color = (min(255, accent[0]+20), min(255, accent[1]-10), min(255, accent[2]+10))
+                # 围巾围绕脖子
+                for x in range(max(0, cx - body_draw_w//2 - 1), min(W, cx + body_draw_w//2 + 1)):
+                    if scarf_y_start >= 0 and scarf_y_start < H:
+                        canvas[scarf_y_start][x] = (*scarf_color, 255)
+                # 围巾飘尾（右侧向下延伸，带波浪）
+                tail_len = min(H - scarf_y_start, body_h // 2 + ps*2)
+                for dy2 in range(tail_len):
+                    ty = scarf_y_start + dy2
+                    wave = int(math.sin(dy2 * 0.5 + frame_idx * 0.3) * ps)
+                    for dx2 in range(ps*2):
+                        tx = cx + body_draw_w//2 + 1 + wave + dx2
+                        if 0 <= ty < H and 0 <= tx < W:
+                            canvas[ty][tx] = (*scarf_color, 255)
+
+            elif acc == "earing":
+                # 耳环：头部侧面的小亮点
+                ear_x = cx + head_r + 1
+                ear_y = head_cy
+                if 0 <= ear_x < W and 0 <= ear_y < H:
+                    canvas[ear_y][ear_x] = (255, 220, 100, 255)  # 金色耳环
+                    if ear_y + 1 < H:
+                        canvas[ear_y+1][ear_x] = (220, 180, 60, 255)  # 耳环下半
+
+            elif acc == "belt_pouch":
+                # 腰包：身体侧面的小方块包
+                pouch_y = body_top + body_h * 2 // 3
+                pouch_x = cx - body_draw_w//2 - ps*2
+                pouch_w = max(ps*2, 3)
+                pouch_h = max(ps*2, 4)
+                for dy2 in range(pouch_h):
+                    for dx2 in range(pouch_w):
+                        px2 = pouch_x + dx2
+                        py2 = pouch_y + dy2
+                        if 0 <= px2 < W and 0 <= py2 < H:
+                            canvas[py2][px2] = (*accent_dark, 255)
+                # 包盖（浅色）
+                if 0 <= pouch_y < H:
+                    for dx2 in range(pouch_w):
+                        px2 = pouch_x + dx2
+                        if 0 <= px2 < W:
+                            canvas[pouch_y][px2] = (*accent_light, 255)
+
+            elif acc == "collar":
+                # 衣领：脖子处的V形或环绕线条
+                collar_y = body_top - 1
+                collar_color = (*accent_light, 255)
+                # V形衣领
+                for dy2 in range(ps*2):
+                    cy2 = collar_y + dy2
+                    # 左侧V线
+                    vx_l = cx - dy2
+                    vx_r = cx + dy2
+                    if 0 <= cy2 < H:
+                        if 0 <= vx_l < W:
+                            canvas[cy2][vx_l] = collar_color
+                        if 0 <= vx_r < W:
+                            canvas[cy2][vx_r] = collar_color
+                # 顶部横线连接
+                for x in range(max(0, cx - body_draw_w//2 - 1), min(W, cx + body_draw_w//2 + 1)):
+                    if 0 <= collar_y < H:
+                        canvas[collar_y][x] = collar_color
 
         # ---- 武器（v0.3.6: 跟随右臂偏移 + weapon_angle旋转） ----
         weapon = type_cfg.get("weapon", "none")
