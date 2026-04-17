@@ -647,6 +647,36 @@ class CharacterEngine:
         
         return animations
     
+    # v0.3.22: 缓动函数 — 替代线性插值，让动画运动更自然
+    # 参考 Robert Penner 经典缓动公式，适配像素级整数动画
+    @staticmethod
+    def _ease_in(t):
+        """加速缓入 — 从静止逐渐加速（用于蓄力、蹲下）"""
+        return t * t
+
+    @staticmethod
+    def _ease_out(t):
+        """减速缓出 — 从快速逐渐减速（用于着地、攻击后坐）"""
+        return t * (2 - t)
+
+    @staticmethod
+    def _ease_in_out(t):
+        """先慢后快再慢 — 自然钟摆运动（用于呼吸、摇摆）"""
+        if t < 0.5:
+            return 2 * t * t
+        return -1 + (4 - 2 * t) * t
+
+    @staticmethod
+    def _ease_in_cubic(t):
+        """三次加速 — 比二次更急促的加速（用于重击蓄力）"""
+        return t * t * t
+
+    @staticmethod
+    def _ease_out_cubic(t):
+        """三次减速 — 比二次更急剧的减速（用于着地冲击）"""
+        t1 = t - 1
+        return t1 * t1 * t1 + 1
+
     def _calc_pose(self, anim, t):
         """根据动画类型和时间计算各肢体偏移量
         返回一个 pose dict，包含：
@@ -657,6 +687,7 @@ class CharacterEngine:
             body_dy                    — 身体整体Y偏移
             head_dy                    — 头部Y偏移
             weapon_angle               — 武器旋转角度（用于攻击）
+        v0.3.22: 引入缓动函数替代线性插值，动画运动更自然流畅
         """
         pose = {
             "left_leg_dx": 0, "left_leg_dy": 0,
@@ -709,10 +740,12 @@ class CharacterEngine:
             
         elif anim == "jump":
             # v0.3.2: 跳跃动画 - 蹲→起跳→滞空→落地
+            # v0.3.22: 缓动曲线让跳跃更自然 — 蹲用ease-in-out，起跳用ease-out快速弹出
             # t: 0~0.15蹲, 0.15~0.35起跳上升, 0.35~0.65滞空, 0.65~1.0下落落地
             if t < 0.15:
-                # 蹲下蓄力
-                squat = t / 0.15  # 0→1
+                # 蹲下蓄力（ease-in-out平滑下蹲）
+                raw = t / 0.15  # 0→1
+                squat = self._ease_in_out(raw)
                 pose["body_dy"] = int(squat * 3)
                 pose["head_dy"] = int(squat * 2)
                 pose["left_leg_dx"] = -1
@@ -720,8 +753,9 @@ class CharacterEngine:
                 pose["left_leg_dy"] = int(squat * 1)
                 pose["right_leg_dy"] = int(squat * 1)
             elif t < 0.35:
-                # 起跳上升（身体上升，腿收起）
-                lift = (t - 0.15) / 0.2  # 0→1
+                # 起跳上升（ease-out快速弹出身体）
+                raw = (t - 0.15) / 0.2  # 0→1
+                lift = self._ease_out_cubic(raw)
                 pose["body_dy"] = -int(lift * 8)
                 pose["head_dy"] = -int(lift * 8)
                 pose["left_arm_dy"] = -int(lift * 3)
@@ -739,8 +773,9 @@ class CharacterEngine:
                 pose["left_leg_dy"] = -2
                 pose["right_leg_dy"] = -2
             else:
-                # 下落并落地
-                fall = (t - 0.65) / 0.35  # 0→1
+                # 下落并落地（ease-in加速下坠 + 着地缓冲）
+                raw = (t - 0.65) / 0.35  # 0→1
+                fall = self._ease_in(raw)
                 pose["body_dy"] = -int(8 * (1 - fall))
                 pose["head_dy"] = -int(8 * (1 - fall))
                 pose["left_arm_dx"] = -int(3 * (1 - fall))
@@ -755,18 +790,21 @@ class CharacterEngine:
         
         elif anim == "attack":
             # 攻击：右臂（武器侧）前伸 → 收回（v0.3.6: 身体前冲+头部后仰分离）
+            # v0.3.22: 蓄力用ease-in（缓慢蓄势），挥出用ease-out（快速爆发后减速）
             # t: 0=蓄力, 0.4=挥出, 1.0=收回
             if t < 0.4:
-                # 蓄力阶段：武器后拉，身体微微后坐
-                swing = t / 0.4  # 0→1
+                # 蓄力阶段：武器后拉，身体微微后坐（ease-in缓慢蓄势）
+                raw = t / 0.4  # 0→1
+                swing = self._ease_in(raw)
                 pose["right_arm_dx"] = -int(swing * 3)
                 pose["right_arm_dy"] = -int(swing * 2)
                 pose["weapon_angle"] = -swing * 0.5
                 pose["body_dy"] = int(swing * 1)  # 后坐
                 pose["head_dy"] = int(swing * 1)  # 头随身体
             else:
-                # 挥出阶段：快速前刺，身体前冲但头部保持
-                swing = (t - 0.4) / 0.6  # 0→1
+                # 挥出阶段：快速前刺，身体前冲但头部保持（ease-out快速爆发）
+                raw = (t - 0.4) / 0.6  # 0→1
+                swing = self._ease_out(raw)
                 retract = max(0, 1 - swing * 1.5)
                 pose["right_arm_dx"] = int(5 * (1 - retract))
                 pose["right_arm_dy"] = -int(3 * (1 - retract))
@@ -779,17 +817,20 @@ class CharacterEngine:
                 pose["right_leg_dx"] = 1
             
         elif anim == "hurt":
-            # 受击：整体后仰
-            pose["body_dy"] = int(t * 2)
-            pose["head_dy"] = int(t * 3)
-            pose["left_arm_dx"] = int(t * 2)
-            pose["right_arm_dx"] = int(t * 2)
+            # 受击：整体后仰（v0.3.22: ease-out缓出 — 快速冲击后减速）
+            et = self._ease_out(t)
+            pose["body_dy"] = int(et * 2)
+            pose["head_dy"] = int(et * 3)
+            pose["left_arm_dx"] = int(et * 2)
+            pose["right_arm_dx"] = int(et * 2)
             
         elif anim == "defend":
             # v0.3.8: 防御动画 — 重心下沉+手臂护身+微颤抖
+            # v0.3.22: ease-out快速进入防御姿态
             if t < 0.25:
-                # 准备阶段：重心下移，手臂举起
-                prep = t / 0.25  # 0→1
+                # 准备阶段：重心下移，手臂举起（ease-out快速架起防御）
+                raw = t / 0.25  # 0→1
+                prep = self._ease_out(raw)
                 pose["body_dy"] = int(prep * 3)
                 pose["head_dy"] = int(prep * 2)
                 pose["left_arm_dx"] = -int(prep * 2)
@@ -815,24 +856,27 @@ class CharacterEngine:
                 pose["right_leg_dx"] = 1
         
         elif anim == "die":
-            # 死亡：身体下沉
-            pose["body_dy"] = int(t * 8)
-            pose["head_dy"] = int(t * 10)
-            pose["left_arm_dx"] = int(t * 2)
-            pose["right_arm_dx"] = int(t * 2)
-            pose["left_leg_dx"] = int(t * 1)
-            pose["right_leg_dx"] = int(t * -1)
+            # 死亡：身体下沉（v0.3.22: ease-in加速 — 逐渐加速倒下，最后瘫软）
+            et = self._ease_in(t)
+            pose["body_dy"] = int(et * 8)
+            pose["head_dy"] = int(et * 10)
+            pose["left_arm_dx"] = int(et * 2)
+            pose["right_arm_dx"] = int(et * 2)
+            pose["left_leg_dx"] = int(et * 1)
+            pose["right_leg_dx"] = int(et * -1)
         
         elif anim == "cast":
             # v0.3.16: 施法动画 — 7帧蓄力→释放→恢复
             # 参考 RPG 标准：蓄力慢(anticipation) → 释放快(release) → 恢复中速(recovery)
+            # v0.3.22: 缓动曲线 — 蓄力ease-in缓慢凝聚，释放ease-out快速爆发
             # t=0~0.29 蓄力（手臂举起，身体后仰）
             # t=0.29~0.43 高位蓄力（能量凝聚）
             # t=0.43~0.57 释放（前推施法，能量爆发）
             # t=0.57~1.0 恢复（收回idle姿态）
             if t < 0.29:
-                # 蓄力阶段：手臂逐渐举高，身体微微后仰
-                prep = t / 0.29  # 0→1
+                # 蓄力阶段：手臂逐渐举高（ease-in缓慢凝聚能量）
+                raw = t / 0.29  # 0→1
+                prep = self._ease_in(raw)
                 pose["right_arm_dy"] = -int(prep * 5)  # 右臂举高
                 pose["right_arm_dx"] = -int(prep * 1)  # 略向左（双手聚能感）
                 pose["left_arm_dy"] = -int(prep * 4)   # 左臂同步举高
@@ -853,8 +897,9 @@ class CharacterEngine:
                 pose["head_dy"] = -1 - int(hold * 1)  # 头更仰
                 pose["weapon_angle"] = -0.3 - hold * 0.2
             elif t < 0.57:
-                # 释放阶段：手臂前推，身体前冲，能量爆发
-                release = (t - 0.43) / 0.14  # 0→1
+                # 释放阶段：手臂前推，身体前冲（ease-out快速释放能量）
+                raw = (t - 0.43) / 0.14  # 0→1
+                release = self._ease_out_cubic(raw)
                 # 从高举快速切换到前推
                 pose["right_arm_dy"] = -int(5 * (1 - release))  # 右臂下压
                 pose["right_arm_dx"] = int(release * 4)          # 右臂前推
@@ -867,9 +912,9 @@ class CharacterEngine:
                 pose["left_leg_dx"] = -int(release * 2)
                 pose["right_leg_dx"] = int(release * 1)
             else:
-                # 恢复阶段：逐渐回到idle姿态
-                recover = (t - 0.57) / 0.43  # 0→1
-                ease = 1 - (1 - recover) ** 2  # ease-out 缓出
+                # 恢复阶段：逐渐回到idle姿态（ease-out缓出）
+                raw = (t - 0.57) / 0.43  # 0→1
+                ease = self._ease_out(raw)
                 pose["right_arm_dy"] = -int(2 * (1 - ease))
                 pose["right_arm_dx"] = int(2 * (1 - ease))
                 pose["left_arm_dy"] = -int(1 * (1 - ease))
@@ -1051,8 +1096,73 @@ class CharacterEngine:
                         canvas[y][x] = (*nose_hl, 255)
                     
                     # 嘴巴（v0.3.7: 按face_type绘制不同嘴型）
+                    # v0.3.22: 动画状态联动嘴型 — 攻击怒吼/受击惊叫/施法吟唱/死亡松弛/防御咬牙
+                    # 优先级：动画状态覆盖 > face_type默认嘴型
                     mouth_y = head_r//3 + 1
-                    if dy >= mouth_y and dy <= mouth_y + 1 and abs(dx) <= head_r//4:
+                    mouth_drawn = False  # 标记是否已由动画状态绘制
+                    
+                    # ---- v0.3.22: 动画驱动嘴型（优先于face_type） ----
+                    if anim == "attack":
+                        # 攻击怒吼：宽张嘴+露齿，比fierce基础更宽
+                        if dy >= mouth_y and dy <= mouth_y + 1 and abs(dx) <= head_r//3:
+                            if dy == mouth_y and abs(dx) <= head_r//3:
+                                canvas[y][x] = (150, 40, 40, 255)  # 深红张嘴
+                                mouth_drawn = True
+                            if dy == mouth_y + 1 and abs(dx) <= head_r//5:
+                                # 下排牙齿暗示
+                                canvas[y][x] = (230, 225, 215, 255)
+                                mouth_drawn = True
+                    
+                    elif anim == "hurt":
+                        # 受击惊叫：大张嘴（椭圆形），痛苦+惊讶
+                        mouth_open_h = 2  # 上下2行，比正常嘴型多1行
+                        if dy >= mouth_y - 1 and dy <= mouth_y + mouth_open_h and abs(dx) <= head_r//4:
+                            # 椭圆张嘴：中间行宽，上下行窄
+                            if dy == mouth_y and abs(dx) <= head_r//4:
+                                canvas[y][x] = (140, 35, 35, 255)  # 最宽行
+                                mouth_drawn = True
+                            elif abs(dx) <= head_r//5:
+                                canvas[y][x] = (160, 45, 45, 255)
+                                mouth_drawn = True
+                    
+                    elif anim == "cast":
+                        # 施法吟唱：O形嘴（念咒时嘴型）
+                        if dy == mouth_y and abs(dx) <= head_r//6:
+                            canvas[y][x] = (170, 60, 60, 255)  # O形竖窄嘴
+                            mouth_drawn = True
+                        if dy == mouth_y - 1 and abs(dx) <= head_r//7:
+                            canvas[y][x] = (180, 70, 70, 255)  # O形上缘
+                            mouth_drawn = True
+                        if dy == mouth_y + 1 and abs(dx) <= head_r//7:
+                            canvas[y][x] = (180, 70, 70, 255)  # O形下缘
+                            mouth_drawn = True
+                    
+                    elif anim == "die":
+                        # 死亡松弛：微张下垂嘴，失去控制感
+                        if dy == mouth_y and abs(dx) <= head_r//5:
+                            canvas[y][x] = (160, 70, 70, 180)  # 半透明淡色（虚弱感）
+                            mouth_drawn = True
+                        if dy == mouth_y + 1 and abs(dx) <= head_r//6:
+                            canvas[y][x] = (155, 65, 65, 140)  # 下垂半透明
+                            mouth_drawn = True
+                    
+                    elif anim == "defend":
+                        # 防御咬牙：紧绷一字线，比serious更紧更短
+                        if dy == mouth_y and abs(dx) <= head_r//6:
+                            canvas[y][x] = (140, 50, 50, 255)  # 紧缩深色嘴线
+                            mouth_drawn = True
+                    
+                    elif anim == "jump":
+                        # 跳跃微张：轻微张嘴（惊讶弱化版）
+                        if dy == mouth_y and abs(dx) <= head_r//5:
+                            canvas[y][x] = (190, 85, 85, 255)
+                            mouth_drawn = True
+                        if dy == mouth_y + 1 and dx == 0:
+                            canvas[y][x] = (185, 80, 80, 255)  # 下方中心1像素（微张）
+                            mouth_drawn = True
+                    
+                    # ---- face_type 默认嘴型（无动画覆盖时使用） ----
+                    if not mouth_drawn and dy >= mouth_y and dy <= mouth_y + 1 and abs(dx) <= head_r//4:
                         if face_type == "cute" or face_type == "gentle":
                             # 微笑：弧形嘴巴（下凹弧线）
                             if dy == mouth_y and abs(dx) <= head_r//5:
