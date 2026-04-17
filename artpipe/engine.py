@@ -2,6 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
+v0.3.34: 周期性眨眼动画(idle/walk/cast末帧闭合眼睑线+抑制高光)+身体椭球法线渐变着色(椭球法线点积光源方向补充横向立体感)
 v0.3.30: HSV色温偏移(高光/阴影色彩分层升级为真正的HSV色相旋转)+修复垂直抖动矩阵为2D索引
 v0.3.26: 关节缝隙阴影(Joint Crease AO,颈部/腰部/肩部衔接处渐变暗化增强部件分离感)
 v0.3.24: 手部渲染(手臂末端添加椭圆形手掌细节，增加角色完成度)
@@ -1254,17 +1255,35 @@ class CharacterEngine:
                                 canvas[y][x] = (max(0, skin[0]-brow_light), max(0, skin[1]-brow_light), max(0, skin[2]-brow_light), 255)
                     
                     # 眼睛（v0.3.19: 情感化眼部表情 — 根据动画状态调整睁眼程度）
+                    # v0.3.34: 周期性眨眼动画 — idle/walk/cast 状态下每隔数帧眨眼一次
+                    # 模拟真实眨眼：正常状态约每3~4秒眨一次，游戏像素角色在循环末帧触发
                     # hurt/jump: 睁大(惊讶) | attack/defend: 眯眼(专注) | die: 半闭(虚弱)
                     # cast: 微睁(施法专注) | 其他(idle/walk/run): 正常
-                    eye_zone_y = abs(dy) <= ps
-                    if anim in ("hurt", "jump"):
-                        eye_zone_y = abs(dy) <= ps + 1  # 惊讶：睁大眼
-                    elif anim in ("attack", "defend"):
-                        eye_zone_y = abs(dy) <= max(0, ps - 1)  # 专注：眯眼
-                    elif anim == "die":
-                        eye_zone_y = dy <= 0 and abs(dy) <= ps  # 虚弱：只画上半
+                    # v0.3.34: 眨眼帧判断 — idle:帧3(末帧), walk:帧5(末帧), cast:帧5
+                    _blink_frame = False
+                    if anim == "idle" and frame_idx == 3:
+                        _blink_frame = True
+                    elif anim == "walk" and frame_idx == 5:
+                        _blink_frame = True
+                    elif anim == "cast" and frame_idx == 5:
+                        _blink_frame = True
+                    if _blink_frame:
+                        # 眨眼：眼睛闭合为一条线（眼睑），用肤色暗色画
+                        eye_zone_y = dy == 0  # 只在中心线画眼睑
+                    else:
+                        eye_zone_y = abs(dy) <= ps
+                        if anim in ("hurt", "jump"):
+                            eye_zone_y = abs(dy) <= ps + 1  # 惊讶：睁大眼
+                        elif anim in ("attack", "defend"):
+                            eye_zone_y = abs(dy) <= max(0, ps - 1)  # 专注：眯眼
+                        elif anim == "die":
+                            eye_zone_y = dy <= 0 and abs(dy) <= ps  # 虚弱：只画上半
                     eye_zone_x = abs(dx) >= head_r//3 and abs(dx) <= head_r//2
-                    if eye_zone_y and eye_zone_x:
+                    if _blink_frame and eye_zone_y and eye_zone_x:
+                        # 眨眼时画眼睑线（肤色暗色窄线，模拟闭合的眼皮）
+                        lid_color = (max(0, skin[0]-35), max(0, skin[1]-25), max(0, skin[2]-20), 255)
+                        canvas[y][x] = lid_color
+                    elif eye_zone_y and eye_zone_x:
                         # 虹膜
                         iris_color = (min(255, accent[0]+30), min(255, accent[1]+30), min(255, accent[2]+30))
                         canvas[y][x] = (*iris_color, 255)
@@ -1273,14 +1292,16 @@ class CharacterEngine:
                             if abs(dx) >= head_r//3 + max(1, ps//2) and abs(dx) <= head_r//2 - max(1, ps//2):
                                 canvas[y][x] = (15, 15, 25, 255)
                     # 主高光（右上方小白点，死亡时不画=失去神采）
-                    if anim != "die":
+                    # v0.3.34: 眨眼时也不画高光（眼睛闭合）
+                    if anim != "die" and not _blink_frame:
                         if dy == -ps//2 and dx == head_r//3 + max(1, ps//2):
                             canvas[y][x] = (255, 255, 255, 255)
                         if dy == -ps//2 and dx == -(head_r//3 + max(1, ps//2)):
                             canvas[y][x] = (255, 255, 255, 255)
                     # v0.3.19: 副高光 — 动漫风第二高光点（主高光内侧下方，增加水润感）
                     # 只在正常/惊讶/施法时显示，眯眼和半闭时不画
-                    if anim not in ("attack", "defend", "die"):
+                    # v0.3.34: 眨眼时也不画副高光
+                    if anim not in ("attack", "defend", "die") and not _blink_frame:
                         sub_y = max(0, -ps//2 + 1)
                         sub_dx = head_r//3 + max(1, ps//2) - 1
                         if dy == sub_y and abs(dx) == sub_dx and canvas[y][x][3] > 0:
@@ -1811,6 +1832,46 @@ class CharacterEngine:
                         min(255, r + boost + 4),    # 红色额外+4偏暖
                         min(255, g + boost + 2),    # 绿色微增
                         min(255, b + max(0, boost - 3)),  # 蓝色少增（偏暖）
+                        a
+                    )
+        
+        # ---- v0.3.34: 身体椭球法线渐变着色 ----
+        # 将身体近似为椭球体，计算每个像素的法线方向与光源方向的点积
+        # 补充已有的纵向三区渐变（body_light/body_color/body_dark），增加横向立体感
+        # 与头部v0.3.21球面法线着色使用相同的光源方向，确保全身光照一致
+        _body_nx_factor = 1.0 / max(1, _contour_hw)  # 横向归一化因子
+        _body_ny_factor = 1.0 / max(1, body_draw_h // 2)  # 纵向归一化因子
+        _body_light_len = (0.5*0.5 + 0.7*0.7) ** 0.5
+        _blx, _bly = -0.5/_body_light_len, -0.7/_body_light_len  # 光源方向（与头部一致）
+        for y in range(body_top, min(H, body_bot)):
+            for x in range(max(0, cx - _contour_hw - 2), min(W, cx + _contour_hw + 2)):
+                r, g, b, a = canvas[y][x]
+                if a == 0:
+                    continue
+                # 只影响身体区域的像素（排除已画的手臂等非身体像素）
+                # 简单判断：在身体矩形范围内的非透明像素
+                bdx = x - cx
+                bdy = y - (body_top + body_draw_h // 2)
+                # 椭球法线计算
+                nx = bdx * _body_nx_factor
+                ny = bdy * _body_ny_factor
+                n_len = (nx*nx + ny*ny) ** 0.5
+                if n_len > 1.0:
+                    continue  # 椭球外的像素不处理
+                if n_len < 0.01:
+                    nx_n, ny_n = 0.0, -1.0  # 中心点法线朝上
+                else:
+                    # 椭球表面法线方向（梯度方向）
+                    nx_n = nx / max(0.01, n_len)
+                    ny_n = ny / max(0.01, n_len)
+                # 法线·光源 → 光照强度
+                dot = nx_n * _blx + ny_n * _bly
+                brightness = int(dot * 8)  # 微妙调节（±8），不覆盖原有渐变
+                if brightness != 0:
+                    canvas[y][x] = (
+                        min(255, max(0, r + brightness)),
+                        min(255, max(0, g + brightness)),
+                        min(255, max(0, b + brightness)),
                         a
                     )
         
