@@ -2,7 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
-v0.3.15: 有序抖动着色(dithered shading) + 像素聚簇清理(pixel cluster cleanup)
+v0.3.16: 施法动画(cast, 7帧蓄力→释放→恢复) + 武器发光效果(additive glow on staff gem/sword tip)
 """
 import hashlib
 import json
@@ -336,6 +336,7 @@ class CharacterEngine:
             "defend": 6,  # 防御：慢速稳定（v0.3.8）
             "hurt": 8,    # 受击：中等反应
             "die": 6,     # 死亡：慢速倒下
+            "cast": 8,    # 施法：中速蓄力+快速释放（v0.3.16）
         }
         for anim_name, frames in animations.items():
             result["animations"][anim_name] = {
@@ -520,6 +521,7 @@ class CharacterEngine:
             "defend": {"frames": 5},  # v0.3.8: 防御动画
             "hurt":   {"frames": 3},
             "die":    {"frames": 6},
+            "cast":   {"frames": 7},  # v0.3.16: 施法动画（蓄力→释放→恢复）
         }
         
         for anim_name, cfg in anim_configs.items():
@@ -538,6 +540,17 @@ class CharacterEngine:
                     # 死亡渐隐
                     alpha = max(0, int(255 * (1 - t)))
                     frame = self._apply_alpha(frame, alpha)
+                elif anim_name == "cast":
+                    # v0.3.16: 施法蓄力闪光效果
+                    # t=0~0.43 蓄力渐强，t=0.43~0.57 释放高峰，t=0.57~1.0 消散
+                    if t < 0.43:
+                        flash_intensity = int(t / 0.43 * 50)
+                    elif t < 0.57:
+                        flash_intensity = 50  # 释放高峰
+                    else:
+                        flash_intensity = int(50 * (1 - (t - 0.57) / 0.43))
+                    if flash_intensity > 0:
+                        frame = self._apply_flash(frame, flash_intensity)
                 frames.append(frame)
             animations[anim_name] = frames
         
@@ -718,6 +731,59 @@ class CharacterEngine:
             pose["right_arm_dx"] = int(t * 2)
             pose["left_leg_dx"] = int(t * 1)
             pose["right_leg_dx"] = int(t * -1)
+        
+        elif anim == "cast":
+            # v0.3.16: 施法动画 — 7帧蓄力→释放→恢复
+            # 参考 RPG 标准：蓄力慢(anticipation) → 释放快(release) → 恢复中速(recovery)
+            # t=0~0.29 蓄力（手臂举起，身体后仰）
+            # t=0.29~0.43 高位蓄力（能量凝聚）
+            # t=0.43~0.57 释放（前推施法，能量爆发）
+            # t=0.57~1.0 恢复（收回idle姿态）
+            if t < 0.29:
+                # 蓄力阶段：手臂逐渐举高，身体微微后仰
+                prep = t / 0.29  # 0→1
+                pose["right_arm_dy"] = -int(prep * 5)  # 右臂举高
+                pose["right_arm_dx"] = -int(prep * 1)  # 略向左（双手聚能感）
+                pose["left_arm_dy"] = -int(prep * 4)   # 左臂同步举高
+                pose["left_arm_dx"] = int(prep * 1)    # 略向右
+                pose["body_dy"] = int(prep * 2)         # 微微下蹲蓄力
+                pose["head_dy"] = -int(prep * 1)        # 头微抬
+                pose["weapon_angle"] = -prep * 0.3      # 武器微微后倾
+            elif t < 0.43:
+                # 高位蓄力：手臂高举过头，身体后仰到极限
+                hold = (t - 0.29) / 0.14  # 0→1
+                base = 1.0  # 从蓄力完成状态开始
+                tremor = round(math.sin(hold * math.pi * 6) * 0.8)  # 能量凝聚颤抖
+                pose["right_arm_dy"] = -int((base + hold * 0.2) * 5) + tremor
+                pose["right_arm_dx"] = -1
+                pose["left_arm_dy"] = -int((base + hold * 0.2) * 4) + tremor
+                pose["left_arm_dx"] = 1
+                pose["body_dy"] = 2 - int(hold * 1)  # 略微下沉蓄势
+                pose["head_dy"] = -1 - int(hold * 1)  # 头更仰
+                pose["weapon_angle"] = -0.3 - hold * 0.2
+            elif t < 0.57:
+                # 释放阶段：手臂前推，身体前冲，能量爆发
+                release = (t - 0.43) / 0.14  # 0→1
+                # 从高举快速切换到前推
+                pose["right_arm_dy"] = -int(5 * (1 - release))  # 右臂下压
+                pose["right_arm_dx"] = int(release * 4)          # 右臂前推
+                pose["left_arm_dy"] = -int(4 * (1 - release))
+                pose["left_arm_dx"] = -int(release * 2)          # 左臂辅助
+                pose["body_dy"] = -int(release * 2)              # 身体前冲
+                pose["head_dy"] = int(release * 1)               # 头随身体前倾
+                pose["weapon_angle"] = release * 0.8             # 武器前挥
+                # 前冲时双腿后蹬
+                pose["left_leg_dx"] = -int(release * 2)
+                pose["right_leg_dx"] = int(release * 1)
+            else:
+                # 恢复阶段：逐渐回到idle姿态
+                recover = (t - 0.57) / 0.43  # 0→1
+                ease = 1 - (1 - recover) ** 2  # ease-out 缓出
+                pose["right_arm_dy"] = -int(2 * (1 - ease))
+                pose["right_arm_dx"] = int(2 * (1 - ease))
+                pose["left_arm_dy"] = -int(1 * (1 - ease))
+                pose["body_dy"] = -int(1 * (1 - ease))
+                pose["weapon_angle"] = 0.4 * (1 - ease)
         
         return pose
 
@@ -1479,6 +1545,55 @@ class CharacterEngine:
                                 canvas[gy][gx] = (*accent, 255)
                 elif weapon == "dagger":
                     canvas[tip_y][min(W-1, tip_x)] = (180, 180, 190, 255)
+            
+            # v0.3.16: 武器发光效果（加法混合 additive glow）
+            # 施法动画时发光最强，其他动画轻微发光
+            glow_intensity = 0.3  # 基础发光强度
+            if anim == "cast":
+                # 施法时根据阶段调整发光：蓄力渐强→释放峰值→恢复渐弱
+                cast_t = frame_idx / max(1, 7 - 1)  # cast动画固定7帧
+                if cast_t < 0.43:
+                    glow_intensity = 0.3 + 0.7 * (cast_t / 0.43)  # 0.3→1.0
+                elif cast_t < 0.57:
+                    glow_intensity = 1.0  # 释放峰值
+                else:
+                    glow_intensity = 1.0 * (1 - (cast_t - 0.57) / 0.43)  # 1.0→0
+            
+            if glow_intensity > 0.05 and weapon in ("staff", "sword", "dagger", "bow"):
+                # 发光中心点
+                gx, gy = tip_x, min(H-1, tip_y)
+                # 发光半径：施法时更大
+                glow_r = int(3 + glow_intensity * 4)
+                # 发光颜色：法杖=accent色，剑=白色，匕首=青色，弓=绿色
+                if weapon == "staff":
+                    gc = (min(255, accent[0] + 50), min(255, accent[1] + 50), min(255, accent[2] + 50))
+                elif weapon == "sword":
+                    gc = (255, 250, 240)
+                elif weapon == "dagger":
+                    gc = (150, 240, 255)
+                else:  # bow
+                    gc = (180, 255, 180)
+                
+                # 径向衰减加法混合
+                for gy2 in range(max(0, gy - glow_r), min(H, gy + glow_r + 1)):
+                    for gx2 in range(max(0, gx - glow_r), min(W, gx + glow_r + 1)):
+                        dist = ((gx2 - gx)**2 + (gy2 - gy)**2) ** 0.5
+                        if dist <= glow_r:
+                            # 二次衰减：中心亮边缘暗
+                            falloff = (1 - dist / glow_r) ** 2 * glow_intensity
+                            # 加法混合（不覆盖已有像素，叠加发光）
+                            existing = canvas[gy2][gx2]
+                            if existing[3] > 0:
+                                # 有实体像素：加法提亮
+                                nr = min(255, int(existing[0] + gc[0] * falloff))
+                                ng = min(255, int(existing[1] + gc[1] * falloff))
+                                nb = min(255, int(existing[2] + gc[2] * falloff))
+                                canvas[gy2][gx2] = (nr, ng, nb, existing[3])
+                            else:
+                                # 空白区域：画半透明发光光晕
+                                ga = int(falloff * 120)
+                                if ga > 8:  # 低于8的太淡，跳过
+                                    canvas[gy2][gx2] = (gc[0], gc[1], gc[2], ga)
         
         elif weapon == "book":
             for y in range(body_top + ps + rady, body_top + ps*5 + rady):
