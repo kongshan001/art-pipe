@@ -2,6 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
+v0.3.26: 关节缝隙阴影(Joint Crease AO,颈部/腰部/肩部衔接处渐变暗化增强部件分离感)
 v0.3.24: 手部渲染(手臂末端添加椭圆形手掌细节，增加角色完成度)
 v0.3.23: 调色板色彩快照(Palette Snap,后处理色彩量化到调色板色阶消除连续色调噪点)+头部镜面高光(Specular Highlight,圆形衰减高光点增强面部立体感)
 v0.3.21: 头部球面法线渐变着色(模拟球体光照:左上亮右下暗)+AI重试seed轮换(fix:重试时更换seed确保不同结果)
@@ -2330,6 +2331,56 @@ class CharacterEngine:
                             min(255, b_sp + boost),
                             a_sp
                         )
+
+        # ---- v0.3.26: 关节缝隙阴影（Joint Crease AO）— 增强身体部件衔接处的深度感 ----
+        # 在头部-颈部、肩部-手臂、腰部-腿部等身体部件衔接区域绘制深色缝隙线
+        # 原理：真实光照中，两个立体形状的交界处会形成深邃的阴影缝隙（如脖子褶皱、
+        #       肩膀内侧、腰带下缘），因为环境光被两侧几何体遮挡。
+        # 像素美术最佳实践：在关节处加深1-2px暗线，可以显著增强部件的"分离感"，
+        #       让角色看起来不是一个扁平的整体，而是由多个立体部件组合而成。
+        # 实现：检测身体关键衔接区域的像素，根据与关节线距离做衰减暗化
+        neck_y = head_cy + head_r  # 颈部底端（头部球体最底端）
+        # 1) 颈部缝隙：在head底端和body_top之间画1px深色线
+        for y in range(max(0, neck_y - 1), min(H, body_top + 1)):
+            for x in range(max(0, cx - body_draw_w // 2), min(W, cx + body_draw_w // 2)):
+                r, g, b, a = canvas[y][x]
+                if a > 0:
+                    # 距关节中心线越近越暗（高斯衰减）
+                    dist = abs(y - (neck_y + body_top) // 2)
+                    max_dist = max(1, (body_top - neck_y) // 2 + 1)
+                    darkness = int(22 * (1.0 - dist / max_dist))
+                    if darkness > 2:
+                        canvas[y][x] = (max(0, r - darkness), max(0, g - darkness), max(0, b - darkness), a)
+
+        # 2) 腰部缝隙：在body_bot（躯干与腿的交界）画深色横线
+        for x in range(max(0, cx - body_draw_w // 2), min(W, cx + body_draw_w // 2)):
+            for dy_c in range(-1, 2):
+                y = body_bot + dy_c
+                if 0 <= y < H:
+                    r, g, b, a = canvas[y][x]
+                    if a > 0:
+                        darkness = 18 if dy_c == 0 else 10
+                        canvas[y][x] = (max(0, r - darkness), max(0, g - darkness), max(0, b - darkness), a)
+
+        # 3) 肩部缝隙：在手臂与躯干交界处画1px深色竖线
+        # 左肩
+        shoulder_x_l = cx - body_draw_w // 2
+        for y in range(body_top, min(H, body_top + body_draw_h // 2)):
+            for dx_c in range(-1, 1):
+                sx = shoulder_x_l + dx_c
+                if 0 <= sx < W:
+                    r, g, b, a = canvas[y][sx]
+                    if a > 0:
+                        canvas[y][sx] = (max(0, r - 14), max(0, g - 14), max(0, b - 14), a)
+        # 右肩
+        shoulder_x_r = cx + body_draw_w // 2
+        for y in range(body_top, min(H, body_top + body_draw_h // 2)):
+            for dx_c in range(0, 2):
+                sx = shoulder_x_r + dx_c
+                if 0 <= sx < W:
+                    r, g, b, a = canvas[y][sx]
+                    if a > 0:
+                        canvas[y][sx] = (max(0, r - 14), max(0, g - 14), max(0, b - 14), a)
 
         # ---- v0.3.13: 地面阴影投射 — 椭圆形渐变阴影增强空间感 ----
         # 在角色脚底位置绘制一个椭圆形半透明阴影，模拟地面投影

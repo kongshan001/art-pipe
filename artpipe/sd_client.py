@@ -2,6 +2,7 @@
 ArtPipe AI图像生成客户端 v0.3
 支持 Pollinations.ai (免费) + HuggingFace Inference API (免费) + 可扩展后端
 零外部依赖，纯标准库实现
+v0.3.26: Prompt增强 — 添加光照方向描述(左上方光源)、脚部/鞋类可见性要求、角色类型鞋类细节
 v0.3.24: 优化Prompt — 增强角色特征描述，添加装备细节和材质关键词
 v0.3.21: 修复重试seed bug — 重试时轮换seed确保每次生成不同图像
 v0.3.18: 增强版 — 视角约束+体型描述注入+负面提示词扩展+enhance参数
@@ -84,17 +85,20 @@ class AIGenerator:
         "warrior": "warrior knight in heavy plate armor with intricate engravings, "
                    "wielding a broadsword and round shield, battle-ready stance, "
                    "chainmail visible under armor joints, leather belt with pouches, "
-                   "steel gauntlets and greaves, heroic determined expression, "
+                   "steel gauntlets and greaves, heavy steel-toed armored boots with iron buckles, "
+                   "heroic determined expression, "
                    "battle-scarred armor with subtle dents and scratches",
         "mage": "wizard mage in layered flowing robes with star patterns, "
                 "holding a gnarled wooden staff topped with a glowing crystal orb, "
                 "arcane symbols floating around hands, runic embroidery on sleeves, "
                 "leather spell component pouch on belt, pointed wide-brim hat, "
+                "pointed leather boots with silver buckle clasps visible below robe hem, "
                 "mystical glowing aura, wisps of magical energy",
         "archer": "archer ranger with a recurve bow and quiver of arrows, "
                   "wearing a hooded forest cloak over leather armor, "
                   "agile athletic build, bracer arm guards, "
                   "utility belt with hunting tools, leaf-shaped arrow fletching, "
+                  "lace-up leather hunting boots with fur trim at the ankle, "
                   "nature-inspired decorative feathers and beads",
         "rogue": "rogue assassin in fitted dark leather armor with buckle straps, "
                  "dual curved daggers with ornate hilts, hooded cowl casting shadow over face, "
@@ -179,12 +183,18 @@ class AIGenerator:
         "side view, back view, profile view"
     )
 
-    # v0.3.24: 质量增强后缀 — 更具体的画面控制描述
+    # v0.3.26: 质量增强后缀 — 添加光照方向描述和脚部完整可见性
     # 遵循 [quality → subject → framing → style → bg] 结构
     # 使用明确的画面描述替代抽象的"masterpiece"标签，Flux模型对此响应更好
+    # v0.3.26新增：
+    #   - 环境光方向描述（左上方光源，温暖高光+冷色阴影），增强AI生成图像的光照一致性
+    #   - 明确的脚部/鞋类可见性要求，减少AI生成半身截断的问题
     QUALITY_SUFFIX = (
         "This is a full body character design sheet showing the complete character from head to toe, "
         "facing the camera directly in a symmetrical front-facing pose. "
+        "The character's feet and footwear are clearly visible and fully rendered at the bottom of the frame. "
+        "The lighting is directional from the upper left with warm highlights on the left side "
+        "and cooler shadow tones on the right side, creating dimensional depth. "
         "The character is placed on a clean pure white background with no other elements. "
         "The artwork features crisp clean linework with sharp focus, well-defined edges, "
         "professional game studio quality illustration with consistent lighting, "
