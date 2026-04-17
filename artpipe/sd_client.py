@@ -2,6 +2,7 @@
 ArtPipe AI图像生成客户端 v0.3
 支持 Pollinations.ai (免费) + HuggingFace Inference API (免费) + 可扩展后端
 零外部依赖，纯标准库实现
+v0.3.24: 优化Prompt — 增强角色特征描述，添加装备细节和材质关键词
 v0.3.21: 修复重试seed bug — 重试时轮换seed确保每次生成不同图像
 v0.3.18: 增强版 — 视角约束+体型描述注入+负面提示词扩展+enhance参数
 """
@@ -79,39 +80,91 @@ class AIGenerator:
     }
 
     TYPE_PROMPTS = {
-        "warrior": "warrior knight in heavy armor, sword and shield, battle-ready, "
-                   "detailed armor plating, heroic stance",
-        "mage": "wizard mage in flowing robes, holding magical staff, arcane symbols, "
-                "glowing runes, mystical aura",
-        "archer": "archer hunter with bow and arrows, forest ranger, hooded cloak, "
-                  "agile build, quiver on back",
-        "rogue": "rogue assassin in dark leather, dual daggers, stealthy, "
-                 "hooded, shadow blending",
-        "healer": "healer cleric in white robes, holy book, divine aura, "
-                  "gentle expression, sacred symbols",
-        "monster": "fantasy monster creature, fearsome, demonic, boss enemy, "
-                   "intimidating, detailed texture",
-        "npc": "friendly NPC villager, simple clothes, approachable, "
-               "warm expression, casual stance",
+        # v0.3.24: 增强角色描述 — 添加装备细节、材质关键词、视觉特征
+        "warrior": "warrior knight in heavy plate armor with intricate engravings, "
+                   "wielding a broadsword and round shield, battle-ready stance, "
+                   "chainmail visible under armor joints, leather belt with pouches, "
+                   "steel gauntlets and greaves, heroic determined expression, "
+                   "battle-scarred armor with subtle dents and scratches",
+        "mage": "wizard mage in layered flowing robes with star patterns, "
+                "holding a gnarled wooden staff topped with a glowing crystal orb, "
+                "arcane symbols floating around hands, runic embroidery on sleeves, "
+                "leather spell component pouch on belt, pointed wide-brim hat, "
+                "mystical glowing aura, wisps of magical energy",
+        "archer": "archer ranger with a recurve bow and quiver of arrows, "
+                  "wearing a hooded forest cloak over leather armor, "
+                  "agile athletic build, bracer arm guards, "
+                  "utility belt with hunting tools, leaf-shaped arrow fletching, "
+                  "nature-inspired decorative feathers and beads",
+        "rogue": "rogue assassin in fitted dark leather armor with buckle straps, "
+                 "dual curved daggers with ornate hilts, hooded cowl casting shadow over face, "
+                 "bandolier of throwing knives, soft-soled boots, "
+                 "utility pouches and lockpicks visible on belt, "
+                 "shadow blending dark cloak with tattered edges",
+        "healer": "healer cleric in pristine white and gold vestments, "
+                  "holding a sacred tome with glowing pages, "
+                  "divine halo of soft light above head, holy symbol pendant, "
+                  "sash with embroidered sigils, gentle compassionate expression, "
+                  "healing aura of warm golden particles",
+        "monster": "fantasy monster creature with textured scaly hide, "
+                   "glowing red eyes with slit pupils, curved horns and sharp fangs, "
+                   "muscular imposing frame, bone armor plates growing from body, "
+                   "detailed skin texture with veins and scars, "
+                   "intimidating boss enemy with dramatic presence, "
+                   "elemental energy radiating from claws",
+        "npc": "friendly NPC villager in simple but well-crafted clothing, "
+               "approachable warm smile, carrying a trade item or tool, "
+               "leather apron over cotton shirt, sensible boots, "
+               "pouch belt with personal belongings, "
+               "natural relaxed posture, wholesome appearance",
         # v0.3.17: 新增骑士和吟游诗人的 AI 提示词
-        "knight": "holy paladin knight in shining plate armor, full helmet with plume, "
-                  "tower shield, sacred sword, imposing heavy armor, divine protector",
-        "bard": "bard minstrel with lute, colorful troubadour outfit, pointed hat with feather, "
-                "charming performer, musical instrument, artistic flair",
+        "knight": "holy paladin knight in mirror-polished full plate armor, "
+                  "great helm with flowing feather plume, "
+                  "tower shield emblazoned with sacred cross, blessed longsword, "
+                  "tabard over armor with heraldic emblem, chainmail aventail, "
+                  "imposing heavy armored silhouette, divine protector aura, "
+                  "polished metal reflections and gold filigree details",
+        "bard": "bard minstrel in a colorful patchwork troubadour outfit, "
+                "carrying an ornately carved lute with inlay details, "
+                "pointed hat with dramatic feather plume, "
+                "ruffled collar and embroidered vest, fingerless gloves, "
+                "charming confident expression, musical notes floating nearby, "
+                "artistic flair with colorful ribbons and accessories",
     }
 
-    # v0.3.9: 配色方案模板 — 按角色类型提供更精准的色彩描述
+    # v0.3.24: 配色方案模板 — 增强材质描述和质感关键词
+    # 包含主色+辅色+点缀色+材质关键词，帮助AI生成更丰富的视觉效果
     COLOR_SCHEMES = {
-        "warrior": "steel gray and crimson armor with gold trim accents",
-        "mage": "deep purple robes with glowing cyan arcane runes and silver embroidery",
-        "archer": "forest green and brown leather with copper buckle details",
-        "rogue": "midnight black and dark crimson leather with silver blade gleam",
-        "healer": "white and soft gold holy vestments with pale blue divine glow",
-        "monster": "dark obsidian and toxic green with glowing red eyes",
-        "npc": "warm earth tones, simple brown and cream village clothing",
+        "warrior": "brushed steel gray armor plates with crimson fabric underlayer, "
+                   "polished gold rivets and trim accents, worn leather brown belt and straps, "
+                   "metallic sheen on armor surfaces",
+        "mage": "deep royal purple velvet robes with luminous cyan arcane rune patterns, "
+                "silver thread embroidery on cuffs and collar, aged oak brown staff, "
+                "glowing iridescent crystal orb with prismatic reflections",
+        "archer": "muted forest green wool cloak over saddle-brown oiled leather armor, "
+                 "antique copper buckle and clasp details, cream linen undershirt, "
+                 "natural wood grain bow with sinew string",
+        "rogue": "matte midnight black leather with subtle dark crimson stitching, "
+                "tarnished silver blade gleam and buckle hardware, "
+                "charcoal gray inner cloak lining, oiled black leather with worn patina",
+        "healer": "soft ivory white linen vestments with pale gold brocade trim, "
+                 "baby blue silk sash with sacred embroidery, "
+                 "warm cream parchment-colored book cover, golden halo glow",
+        "monster": "dark obsidian-black scales with toxic iridescent green bioluminescent patterns, "
+                   "molten red glowing eyes and veins, bone white horns and claws, "
+                   "charred gray hide texture with ember-like cracks",
+        "npc": "warm earth-tone palette of terracotta red, golden wheat, and forest brown, "
+               "undyed natural linen undershirt, "
+               "oiled leather apron in honey brown, brass button details",
         # v0.3.17
-        "knight": "polished silver and gold plate armor with royal blue tabard and crimson cross emblem",
-        "bard": "rich burgundy and forest green troubadour outfit with gold embroidery and colorful patches",
+        "knight": "mirror-polished silver plate armor with bright gold filigree edges, "
+                  "royal blue silk tabard with white cross emblem, "
+                  "crimson red feather plume on helm, "
+                  "gleaming reflective metal surfaces with blue-steel cold shadows",
+        "bard": "rich burgundy velvet coat with emerald green patches and copper stitching, "
+                "gold embroidery on collar and cuffs, "
+                "natural wood lute body with amber varnish finish, "
+                "colorful silk ribbons in teal, gold, and crimson",
     }
 
     # 负面提示词：精简版 — 聚焦对 Flux/Pollinations 最有效的排除项
@@ -126,13 +179,16 @@ class AIGenerator:
         "side view, back view, profile view"
     )
 
-    # 质量增强后缀 — 遵循 [quality → subject → framing → style → bg] 结构
-    # v0.3.9: 改为 Flux 友好的自然语言描述（Flux 对句子式 prompt 效果更佳）
+    # v0.3.24: 质量增强后缀 — 更具体的画面控制描述
+    # 遵循 [quality → subject → framing → style → bg] 结构
+    # 使用明确的画面描述替代抽象的"masterpiece"标签，Flux模型对此响应更好
     QUALITY_SUFFIX = (
-        "This is a full body character design sheet showing the character from the front view, "
-        "facing the camera directly. The character is placed on a clean white background. "
-        "The artwork is a masterpiece quality game asset with highly detailed clean lines, "
-        "sharp focus, well-defined edges, and professional illustration quality suitable for a video game."
+        "This is a full body character design sheet showing the complete character from head to toe, "
+        "facing the camera directly in a symmetrical front-facing pose. "
+        "The character is placed on a clean pure white background with no other elements. "
+        "The artwork features crisp clean linework with sharp focus, well-defined edges, "
+        "professional game studio quality illustration with consistent lighting, "
+        "balanced composition, and clear visual silhouette suitable as a video game character asset."
     )
 
     def __init__(self, backend="pollinations", api_key=None):

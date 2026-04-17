@@ -2,6 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
+v0.3.24: 手部渲染(手臂末端添加椭圆形手掌细节，增加角色完成度)
 v0.3.23: 调色板色彩快照(Palette Snap,后处理色彩量化到调色板色阶消除连续色调噪点)+头部镜面高光(Specular Highlight,圆形衰减高光点增强面部立体感)
 v0.3.21: 头部球面法线渐变着色(模拟球体光照:左上亮右下暗)+AI重试seed轮换(fix:重试时更换seed确保不同结果)
 v0.3.20: 腿部纵向渐变着色(body_light/body_color/body_dark三区)+眉毛情感系统(动画状态联动:攻击V形怒眉/惊讶上扬/死亡下垂/施法微蹙)
@@ -1606,6 +1607,31 @@ class CharacterEngine:
             for x in range(cx + body_w//2 + radx, min(W, cx + body_w//2 + arm_w + radx)):
                 if 0 <= y < H:
                     canvas[y][x] = (*arm_c, 255)
+        
+        # ---- v0.3.24: 手部渲染 — 手臂末端添加手掌细节增加完成度 ----
+        # 手掌是手臂末端的椭圆区域（比手臂宽1px），用肤色绘制
+        # 与手臂颜色一致但使用更亮的skin_light色模拟手心受光
+        hand_w = arm_w + ps  # 手掌比手臂略宽
+        hand_h = max(ps + 1, arm_w)  # 手掌高度
+        # 左手（跟随左臂偏移）
+        lh_x = cx - body_w//2 - hand_w + ladx  # 手掌中心x
+        lh_y = arm_bot_y + lady - 1  # 手掌中心y（手臂底部）
+        for y in range(max(0, lh_y), min(H, lh_y + hand_h)):
+            for x in range(max(0, lh_x), min(W, lh_x + hand_w)):
+                # 椭圆内判定
+                hx = (x - lh_x - hand_w/2) / max(1, hand_w/2)
+                hy = (y - lh_y - hand_h/2) / max(1, hand_h/2)
+                if hx*hx + hy*hy <= 1.0:
+                    canvas[y][x] = (*skin_light, 255)
+        # 右手（跟随右臂偏移）
+        rh_x = cx + body_w//2 + radx  # 手掌中心x
+        rh_y = arm_bot_y + rady - 1  # 手掌中心y
+        for y in range(max(0, rh_y), min(H, rh_y + hand_h)):
+            for x in range(max(0, rh_x), min(W, rh_x + hand_w)):
+                hx = (x - rh_x - hand_w/2) / max(1, hand_w/2)
+                hy = (y - rh_y - hand_h/2) / max(1, hand_h/2)
+                if hx*hx + hy*hy <= 1.0:
+                    canvas[y][x] = (*skin_light, 255)
         
         # ---- 类型专属配件 ----
         # 战士：盾牌
