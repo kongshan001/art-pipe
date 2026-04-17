@@ -2,6 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
+v0.3.15: 有序抖动着色(dithered shading) + 像素聚簇清理(pixel cluster cleanup)
 """
 import hashlib
 import json
@@ -1094,24 +1095,68 @@ class CharacterEngine:
         
         for y in range(body_top, min(H, body_bot)):
             # v0.3.9: 纵向颜色渐变 — 顶部高光、底部深色
+            # v0.3.15: 颜色过渡区域使用有序抖动(dithered shading)平滑过渡
             if body_bot > body_top:
                 vert_t = (y - body_top) / (body_bot - body_top)  # 0=顶 1=底
             else:
                 vert_t = 0.5
-            # 上30%用高光色，中间40%用原色，下30%用深色
-            if vert_t < 0.3:
+            # 有序抖动阈值矩阵(4x4 Bayer) — 让颜色过渡区域产生中间色错觉
+            # 经典像素美术技法：两种颜色在边界处用固定图案混合，视觉上产生新色调
+            dither_thresholds = [
+                [ 0,  8,  2, 10],
+                [12,  4, 14,  6],
+                [ 3, 11,  1,  9],
+                [15,  7, 13,  5],
+            ]
+            # v0.3.15: 带抖动的三区渐变
+            # 过渡带: 0.2~0.4(高光→原色), 0.6~0.8(原色→深色)
+            # 在过渡带内用 Bayer 矩阵决定每像素使用哪种颜色，模拟中间色调
+            row_color = body_color  # 默认中间色
+            if vert_t < 0.2:
                 row_color = body_light
-            elif vert_t > 0.7:
+            elif vert_t < 0.4:
+                # 高光→原色过渡带（约20%身体高度）：50%位置开始抖动
+                blend = (vert_t - 0.2) / 0.2  # 0→1
+                local_y_body = y - body_top
+                local_x_body_ref = 0  # 用于抖动矩阵索引
+                threshold = dither_thresholds[local_y_body % 4][0] / 16.0
+                if blend > threshold:
+                    row_color = body_color
+                else:
+                    row_color = body_light
+            elif vert_t > 0.8:
                 row_color = body_dark
-            else:
-                row_color = body_color
+            elif vert_t > 0.6:
+                # 原色→深色过渡带（约20%身体高度）
+                blend = (vert_t - 0.6) / 0.2  # 0→1
+                local_y_body = y - body_top
+                threshold = dither_thresholds[local_y_body % 4][0] / 16.0
+                if blend > threshold:
+                    row_color = body_dark
+                else:
+                    row_color = body_color
             
             for x in range(max(0, cx - body_draw_w//2), min(W, cx + body_draw_w//2)):
                 # v0.3.9: 横向也做微妙渐变（中心亮、边缘暗）
+                # v0.3.15: 横向边缘也用抖动过渡
                 h_dist = abs(x - cx) / max(1, body_draw_w // 2)  # 0=中心 1=边缘
-                if h_dist > 0.7:
-                    # 边缘区域用略深色模拟侧面阴影
-                    fx_color = (max(0, row_color[0]-10), max(0, row_color[1]-10), max(0, row_color[2]-10))
+                local_x_body = x - (cx - body_draw_w//2)
+                local_y_body = y - body_top
+                dither_val = dither_thresholds[local_y_body % 4][local_x_body % 4] / 16.0
+                if h_dist > 0.75:
+                    # 外边缘区：深色（用抖动平滑过渡）
+                    edge_blend = (h_dist - 0.75) / 0.25  # 0→1
+                    if edge_blend > dither_val:
+                        fx_color = (max(0, row_color[0]-12), max(0, row_color[1]-12), max(0, row_color[2]-12))
+                    else:
+                        fx_color = (max(0, row_color[0]-5), max(0, row_color[1]-5), max(0, row_color[2]-5))
+                elif h_dist > 0.6:
+                    # 轻微边缘暗化过渡区
+                    edge_blend = (h_dist - 0.6) / 0.15  # 0→1
+                    if edge_blend > dither_val:
+                        fx_color = (max(0, row_color[0]-5), max(0, row_color[1]-5), max(0, row_color[2]-5))
+                    else:
+                        fx_color = row_color
                 else:
                     fx_color = row_color
                 
@@ -1582,6 +1627,39 @@ class CharacterEngine:
                             min(255, b + max(0, rim_strength - 4)),  # 蓝色少增一点
                             a
                         )
+        
+        # ---- v0.3.15: 像素聚簇清理（Pixel Cluster Cleanup）----
+        # 移除孤立的单一不透明像素（四周全是透明的1px点），让角色看起来更精致
+        # 经典像素美术规则：单个悬浮像素(noise)使画面显得机械/粗糙
+        # 但保留描边上的孤立像素（它们是角色轮廓的一部分）
+        cleanup_pass = [[False]*W for _ in range(H)]
+        for y in range(1, H - 1):
+            for x in range(1, W - 1):
+                r, g, b, a = canvas[y][x]
+                if a == 0:
+                    continue
+                # 检查4方向邻居
+                has_opaque_neighbor = False
+                for ddx, ddy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nx2, ny2 = x+ddx, y+ddy
+                    if 0 <= nx2 < W and 0 <= ny2 < H and canvas[ny2][nx2][3] > 0:
+                        has_opaque_neighbor = True
+                        break
+                # 检查对角线邻居（更严格的孤立检测）
+                if not has_opaque_neighbor:
+                    for ddx, ddy in [(-1,-1),(1,-1),(-1,1),(1,1)]:
+                        nx2, ny2 = x+ddx, y+ddy
+                        if 0 <= nx2 < W and 0 <= ny2 < H and canvas[ny2][nx2][3] > 0:
+                            has_opaque_neighbor = True
+                            break
+                # 完全孤立的不透明像素 → 标记为清理
+                if not has_opaque_neighbor:
+                    cleanup_pass[y][x] = True
+        # 执行清理：将孤立像素设为透明
+        for y in range(H):
+            for x in range(W):
+                if cleanup_pass[y][x]:
+                    canvas[y][x] = (0, 0, 0, 0)
         
         # ---- v0.3.13: 地面阴影投射 — 椭圆形渐变阴影增强空间感 ----
         # 在角色脚底位置绘制一个椭圆形半透明阴影，模拟地面投影
