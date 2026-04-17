@@ -113,24 +113,16 @@ class AIGenerator:
         "bard": "rich burgundy and forest green troubadour outfit with gold embroidery and colorful patches",
     }
 
-    # 负面提示词：综合通用质量排除 + 游戏精灵专用排除
-    # v0.3.18: 增强版 — 新增Flux常见伪影排除 + 角色一致性约束
+    # 负面提示词：精简版 — 聚焦对 Flux/Pollinations 最有效的排除项
+    # v0.3.19: 从 ~130 token 精简至 ~50 token，去除冗余项，聚焦核心质量排除
+    # Flux 模型对负面提示词响应有限，优先保留最常见的质量问题
     NEGATIVE_PROMPT = (
-        "lowres, bad anatomy, bad hands, bad proportions, text, error, "
-        "missing fingers, extra digit, fewer digits, cropped, worst quality, "
-        "low quality, normal quality, jpeg artifacts, signature, watermark, "
-        "username, blurry, deformed, disfigured, extra limbs, extra arms, "
-        "mutated, ugly, duplicate, morbid, mutilated, out of frame, "
-        "grainy, noisy, jpeg compression, "
-        "3d render, realistic, photorealistic, photograph, oil painting, "
-        "detailed background, complex background, gradient background, "
-        "volumetric lighting, bokeh, lens flare, depth of field, "
-        "multiple characters, partial body, "
+        "3d render, realistic, photograph, lowres, blurry, bad anatomy, "
+        "deformed, disfigured, extra limbs, bad hands, text, watermark, "
+        "multiple characters, partial body, cropped, out of frame, "
+        "gradient background, complex background, "
         "asymmetric face, cross-eyed, awkward pose, twisted torso, "
-        "floating limbs, disconnected body parts, extra joints, "
-        "background characters, shadow clone, mirror reflection, "
-        "side view, back view, three-quarter view, profile view, "
-        "overlapping limbs, tangled arms, melted proportions"
+        "side view, back view, profile view"
     )
 
     # 质量增强后缀 — 遵循 [quality → subject → framing → style → bg] 结构
@@ -284,7 +276,26 @@ class AIGenerator:
         # 8. 质量增强后缀（自然语言）
         parts.append(self.QUALITY_SUFFIX)
 
-        return ", ".join(parts)
+        # v0.3.19: 智能连接 — 标签式部分用逗号，句子式部分用空格
+        # Flux 模型对自然语言段落响应更好，而非逗号拼接的碎片
+        tags = []
+        sentences = []
+        for p in parts:
+            p = p.strip().rstrip(",")
+            if not p:
+                continue
+            if p.startswith(("The ", "This ", "A ", "An ")):
+                sentences.append(p)
+            else:
+                tags.append(p)
+        
+        result_parts = []
+        if tags:
+            result_parts.append(", ".join(tags))
+        if sentences:
+            result_parts.append(" ".join(sentences))
+        
+        return ". ".join(result_parts)
 
     def _call_pollinations(self, prompt, width, height, seed):
         """调用 Pollinations.ai 免费API"""

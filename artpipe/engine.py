@@ -233,7 +233,8 @@ class CharacterEngine:
                 style = s
                 break
 
-        # 检测类型（按优先级匹配，匹配到即停止）
+        # 检测类型 — 评分制：统计每个类型命中的关键词数，选最高分
+        # v0.3.19: 修复 warrior/knight 关键词冲突，改用评分机制替代首次匹配
         char_type = "warrior"
         type_keywords = {
             "mage": ["法师", "魔法师", "巫师", "mage", "wizard", "魔法", "少女", "术士", "sorcerer"],
@@ -241,15 +242,21 @@ class CharacterEngine:
             "archer": ["弓箭手", "猎人", "archer", "hunter", "弓"],
             "rogue": ["盗贼", "刺客", "rogue", "assassin", "thief", "匕首", "忍者", "ninja"],
             "healer": ["治疗", "牧师", "healer", "priest", "cleric", "修女", "僧侣"],
-            "knight": ["骑士", "圣骑士", "knight", "paladin", "坦克", "tank"],  # v0.3.17
+            "knight": ["骑士", "圣骑士", "knight", "paladin", "坦克", "tank", "圣骑"],  # v0.3.17→19
             "bard": ["诗人", "吟游诗人", "bard", "minstrel", "音乐家", "乐师"],  # v0.3.17
             "npc": ["村民", "商人", "npc", "villager", "店员", "老爷爷", "老奶奶"],
-            "warrior": ["战士", "武士", "骑士", "warrior", "knight", "剑", "勇者"],
+            "warrior": ["战士", "武士", "warrior", "剑", "勇者", "剑士", "sword"],
         }
+        # 评分：计算每个类型命中数，选得分最高的
+        best_type = "warrior"
+        best_score = 0
         for t, kws in type_keywords.items():
-            if any(kw in prompt_lower for kw in kws):
-                char_type = t
-                break
+            score = sum(1 for kw in kws if kw in prompt_lower)
+            if score > best_score:
+                best_score = score
+                best_type = t
+        if best_score > 0:
+            char_type = best_type
 
         # 检测颜色
         color = None
