@@ -1,0 +1,62 @@
+{
+  "project": "ArtPipe",
+  "description": "AI 2D Game Character Asset API",
+  "repository": "https://github.com/kongshan001/art-pipe",
+  "current_version": "0.3.33",
+  "versions": [
+    {
+      "version": "0.1.0",
+      "tag": "v0.1.0",
+      "commit": "f0b89d4",
+      "date": "2025-03",
+      "milestone": "MVP - AI 2D游戏角色资产生成管线",
+      "type": "feat",
+      "summary": "ArtPipe 首个可用版本，建立核心管线架构",
+      "highlights": [
+        "基础程序化角色渲染引擎",
+        "命令行接口，文字描述→像素角色",
+        "基础动画系统(idle/walk/attack)",
+        "PNG SpriteSheet 输出"
+      ],
+      "doc": "versions/v0.1.md"
+    },
+    {
+      "version": "0.2.0",
+      "tag": "v0.2.0",
+      "commit_range": ["66650f3", "c432b61"],
+      "date": "2025-03",
+      "milestone": "API-First 重构",
+      "type": "feat",
+      "summary": "从CLI工具转型为HTTP API服务，支持多风格多角色类型",
+      "highlights": [
+        "HTTP API 服务化 (POST /api/generate)",
+        "5种风格 × 7种角色类型",
+        "6种动画状态",
+        "Spine骨骼JSON + Unity Package + Godot Scene 导出",
+        "零依赖纯标准库"
+      ],
+      "doc": "versions/v0.2.md"
+    },
+    {
+      "version": "0.3.0",
+      "tag": "v0.3.0",
+      "commit": "1ccd7ce",
+      "date": "2025-04",
+      "milestone": "AI图像生成 + 渲染质量飞跃",
+      "type": "feat",
+      "summary": "新增AI图像生成(Pollinations/Flux)，30+次迭代大幅提升渲染质量",
+      "highlights": [
+        "AI图像生成集成 (Pollinations/HuggingFace Flux)",
+        "3种渲染模式: procedural/ai/hybrid",
+        "高级渲染: Edge AO/Rim Light/SSS/Dithering/Bresenham描边",
+        "动画系统: 8种动画+缓动曲线+次级运动+表情系统",
+        "9种角色类型: 战士/法师/弓箭手/盗贼/治疗者/怪物/NPC/骑士/吟游诗人",
+        "色彩系统: HSV和谐/调色板快照/色温偏移",
+        "GitHub Pages交互式生成器"
+      ],
+      "iterations": 33,
+      "latest_sub": "0.3.33",
+      "doc": "versions/v0.3.md"
+    }
+  ]
+}
