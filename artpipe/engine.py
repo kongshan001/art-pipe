@@ -247,7 +247,7 @@ class CharacterEngine:
 
     def generate(self, prompt, style=None, char_type=None, seed=None,
                  render_mode="procedural", ai_backend="pollinations",
-                 ai_width=512, ai_height=512):
+                 ai_width=512, ai_height=768):
         """
         核心生成接口：prompt → 完整角色资产包
         
@@ -321,6 +321,9 @@ class CharacterEngine:
                 "width": ai_width,
                 "height": ai_height,
             }
+            # v0.3.12: 缩略图（如果有）
+            if ai_result.get("thumbnail_b64"):
+                result["ai_image"]["thumbnail_b64"] = ai_result["thumbnail_b64"]
         
         # 附加各动画的帧数据（v0.3.3: 逐动画FPS，不同动画速度不同）
         anim_fps = {
