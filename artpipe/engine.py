@@ -718,26 +718,38 @@ class CharacterEngine:
             
         elif anim == "walk":
             # 腿交替迈步 + 轻微身体上下浮动
+            # v0.3.27: 次级运动 — 躯干前倾微摆+头部延迟跟随
             phase = t * math.pi * 2
             pose["left_leg_dx"] = int(math.sin(phase) * 2)
             pose["left_leg_dy"] = -int(abs(math.sin(phase)) * 2)
             pose["right_leg_dx"] = int(math.sin(phase + math.pi) * 2)
             pose["right_leg_dy"] = -int(abs(math.sin(phase + math.pi)) * 2)
             pose["body_dy"] = -int(abs(math.sin(phase * 2)) * 1)
-            pose["head_dy"] = pose["body_dy"]
+            # v0.3.27: 躯干横向微倾（与迈步同相，相位偏移π/4产生延迟感）
+            # 行走时重心随迈步自然左右微移，幅度1.5px（int截断后实际±1px）
+            pose["body_dx"] = int(math.sin(phase + math.pi / 4) * 1.5)
+            # v0.3.27: 头部延迟跟随 — 比body_dy额外延迟0.2弧度，幅度1.5px
+            # 模拟真实行走中头部因惯性滞后于躯干的现象
+            pose["head_dy"] = -int(abs(math.sin(phase * 2 + 0.2)) * 1.5)
             # 手臂自然摆动（与腿反向）
             pose["left_arm_dx"] = int(math.sin(phase + math.pi) * 1)
             pose["right_arm_dx"] = int(math.sin(phase) * 1)
             
         elif anim == "run":
             # 更大幅度的腿交替 + 身体前倾
+            # v0.3.27: 次级运动 — 跑步躯干前倾+更大横向摆动+头部延迟
             phase = t * math.pi * 2
             pose["left_leg_dx"] = int(math.sin(phase) * 3)
             pose["left_leg_dy"] = -int(abs(math.sin(phase)) * 3)
             pose["right_leg_dx"] = int(math.sin(phase + math.pi) * 3)
             pose["right_leg_dy"] = -int(abs(math.sin(phase + math.pi)) * 3)
             pose["body_dy"] = -int(abs(math.sin(phase * 2)) * 2)
-            pose["head_dy"] = pose["body_dy"]
+            # v0.3.27: 跑步躯干横向摆动（幅度2px，比walk更大）
+            # 重心左右转移更明显，相位偏移π/3增加动态感
+            pose["body_dx"] = int(math.sin(phase + math.pi / 3) * 2)
+            # v0.3.27: 头部延迟跟随 — 延迟0.3弧度，幅度2.5px（int后实际±1px）
+            # 跑步时头部惯性更大，滞后更明显
+            pose["head_dy"] = -int(abs(math.sin(phase * 2 + 0.3)) * 2.5)
             pose["left_arm_dx"] = int(math.sin(phase + math.pi) * 2)
             pose["right_arm_dx"] = int(math.sin(phase) * 2)
             pose["left_arm_dy"] = -int(abs(math.sin(phase + math.pi)) * 1)
@@ -959,7 +971,7 @@ class CharacterEngine:
                 "right_leg_dx": 0, "right_leg_dy": 0,
                 "left_arm_dx": 0, "left_arm_dy": 0,
                 "right_arm_dx": 0, "right_arm_dy": 0,
-                "body_dy": 0, "head_dy": 0,
+                "body_dx": 0, "body_dy": 0, "head_dy": 0,
                 "weapon_angle": 0,
                 "body_scale_x": 1.0,
                 "body_scale_y": 1.0,
@@ -1017,8 +1029,12 @@ class CharacterEngine:
         # 应用 body_dy/head_dy 独立偏移（v0.3.6修复：body_dy 真正影响躯干位置）
         body_dy = pose["body_dy"]
         head_dy = pose["head_dy"]
+        # v0.3.27: 躯干横向偏移（walk/run次级运动 — 重心左右微移）
+        body_dx = pose.get("body_dx", 0)
         
-        # 头部位置：仅受 head_dy 影响
+        # v0.3.27: 上半身水平中心 — 受body_dx影响（头、躯干、手臂随重心横移）
+        torso_cx = cx + body_dx
+        # 头部位置：仅受 head_dy 影响，水平跟随躯干
         head_cy = cy - body_h // 2 - head_r + 2 + head_dy
         # 身体位置：基础位置 + body_dy 独立偏移（不再跟随头部head_dy）
         body_top_base = cy - body_h // 2 + 2 + 1  # 颈部基准位置
@@ -1026,6 +1042,12 @@ class CharacterEngine:
         # v0.3.25: body_bot 使用 body_draw_h（受 squash & stretch 纵向缩放影响）
         body_bot = body_top + body_draw_h
         leg_top = body_bot + 1
+        
+        # v0.3.27: 应用 body_dx 到 cx — 上半身（头/躯干/手臂/配件）使用偏移后的中心
+        # 腿部将在稍后恢复原始cx以保持地面锚定
+        _original_cx = cx
+        if body_dx != 0:
+            cx = torso_cx
         
         # ---- 绘制头部 ----
         # v0.3.21: 头部渐变着色 — 左上亮、右下暗，模拟球体光照
@@ -1570,6 +1592,11 @@ class CharacterEngine:
                 if abs(x - cx) <= ps:
                     canvas[y][x] = (*accent_light, 255)
         
+        # v0.3.27: 恢复原始cx — 腿部使用无偏移的中心保持地面锚定
+        # （腿已经有自己的ldx/rdx偏移，不需要body_dx影响）
+        if body_dx != 0:
+            cx = _original_cx
+        
         # ---- 绘制腿（v0.3.20: 纵向渐变着色增加立体感，匹配身体渐变风格） ----
         leg_w = body_w // 3
         # 左腿（带偏移 + 纵向渐变：顶部受光偏亮，底部阴影偏暗）
@@ -1599,19 +1626,197 @@ class CharacterEngine:
                 if 0 <= y < H:
                     canvas[y][x] = (*leg_c, 255)
         
-        # ---- 鞋子（v0.3.2: 腿底部加深色鞋子区域） ----
-        shoe_color = (max(0, body_color[0]-60), max(0, body_color[1]-60), max(0, body_color[2]-60))
-        shoe_h = max(ps, leg_h // 3)
-        # 左鞋
-        for y in range(min(H-1, leg_top + ldy + leg_h - shoe_h), min(H, leg_top + ldy + leg_h)):
-            for x in range(max(0, cx - body_w//2 + ldx - ps), min(W, cx - body_w//2 + ldx + leg_w + ps)):
-                if 0 <= y < H and canvas[y][x][3] > 0:
-                    canvas[y][x] = (*shoe_color, 255)
-        # 右鞋
-        for y in range(min(H-1, leg_top + rdy + leg_h - shoe_h), min(H, leg_top + rdy + leg_h)):
-            for x in range(max(0, cx + body_w//2 - leg_w + rdx - ps), min(W, cx + body_w//2 + rdx + ps)):
-                if 0 <= y < H and canvas[y][x][3] > 0:
-                    canvas[y][x] = (*shoe_color, 255)
+        # ---- v0.3.27: 按类型鞋子渲染 — 独特鞋型+双层渐变着色 ----
+        # 每种角色类型有独特的鞋型设计，提升视觉辨识度和完成度
+        # 鞋子使用 body_dark（上部衔接）→ shoe_color（主体）→ shoe_sole（鞋底）三层渐变
+        # shoe_style: "boots"(战士/骑士), "pointed"(法师), "hunting"(弓箭手),
+        #             "soft"(盗贼), "sandals"(治疗师), "claws"(怪物), "plain"(NPC/吟游诗人)
+        shoe_type_map = {
+            "warrior": "boots", "knight": "heavy_boots",
+            "mage": "pointed", "archer": "hunting",
+            "rogue": "soft", "healer": "sandals",
+            "monster": "claws", "npc": "plain", "bard": "plain",
+        }
+        shoe_style = shoe_type_map.get(char_type_key, "plain")
+        # 鞋子主色：基于body色的深色变体（偏冷偏暗，模拟皮革/金属质感）
+        shoe_color = _cool_shift(body_color, 50)
+        # 鞋底色：更深一级的暗色（鞋底与地面接触面）
+        shoe_sole = _cool_shift(body_color, 70)
+        # 鞋子高光（鞋面受光面）
+        shoe_highlight = _warm_shift(shoe_color, 10)
+        shoe_h = max(ps, leg_h // 3)  # 鞋子高度（从腿底部往上）
+
+        for side in ("left", "right"):
+            if side == "left":
+                leg_dx, leg_dy = ldx, ldy
+                leg_x0 = cx - body_w // 2 + leg_dx
+            else:
+                leg_dx, leg_dy = rdx, rdy
+                leg_x0 = cx + body_w // 2 - leg_w + rdx
+
+            # 该腿的鞋底Y范围
+            leg_bottom = min(H, leg_top + leg_dy + leg_h)
+            shoe_top_y = min(H - 1, leg_bottom - shoe_h)
+
+            if shoe_style == "boots":
+                # 战士：圆头装甲靴 — 比腿宽1px，底部加厚鞋底+微圆弧
+                # 靴子比腿稍宽，模拟包裹感
+                for y in range(shoe_top_y, leg_bottom):
+                    if y < 0 or y >= H:
+                        continue
+                    # 靴子宽度随Y变化：上部窄（衔接腿），底部宽（鞋底）
+                    boot_t = (y - shoe_top_y) / max(1, shoe_h - 1)  # 0=上 1=下
+                    extra_w = int(boot_t * 1.5)  # 底部比上部宽1-2px
+                    for x in range(max(0, leg_x0 - ps - extra_w), min(W, leg_x0 + leg_w + ps + extra_w)):
+                        if canvas[y][x][3] > 0 or (0 <= y < H and 0 <= x < W):
+                            # 检查是否在鞋区域内（半透明像素也覆盖）
+                            if canvas[y][x][3] == 0:
+                                continue
+                            # 三层渐变：上部shoe_highlight → 中部shoe_color → 底部shoe_sole
+                            if boot_t < 0.3:
+                                sc = shoe_highlight
+                            elif boot_t > 0.75:
+                                sc = shoe_sole
+                            else:
+                                sc = shoe_color
+                            canvas[y][x] = (*sc, 255)
+                    # 底部最后一行加厚鞋底线（深色）
+                    if y == leg_bottom - 1:
+                        for x in range(max(0, leg_x0 - ps - 1), min(W, leg_x0 + leg_w + ps + 1)):
+                            if 0 <= y < H and canvas[y][x][3] > 0:
+                                canvas[y][x] = (*shoe_sole, 255)
+
+            elif shoe_style == "heavy_boots":
+                # 骑士：重型铁靴 — 最宽，方形钝头，金属扣环装饰
+                for y in range(shoe_top_y, leg_bottom):
+                    if y < 0 or y >= H:
+                        continue
+                    boot_t = (y - shoe_top_y) / max(1, shoe_h - 1)
+                    # 重甲靴底部更宽
+                    extra_w = int(boot_t * 2.5)
+                    for x in range(max(0, leg_x0 - ps - extra_w), min(W, leg_x0 + leg_w + ps + extra_w)):
+                        if canvas[y][x][3] == 0:
+                            continue
+                        if boot_t < 0.25:
+                            sc = shoe_highlight
+                        elif boot_t > 0.7:
+                            sc = shoe_sole
+                        else:
+                            sc = shoe_color
+                        canvas[y][x] = (*sc, 255)
+                    # 铁扣装饰线（靴子中部1px横向亮线，模拟金属扣环）
+                    if abs(boot_t - 0.4) < 0.15 and leg_x0 + leg_w + extra_w < W:
+                        buck_x0 = max(0, leg_x0 - extra_w)
+                        buck_x1 = min(W, leg_x0 + leg_w + extra_w)
+                        for x in range(buck_x0, buck_x1):
+                            if canvas[y][x][3] > 0:
+                                canvas[y][x] = (*_warm_shift(accent, 15), 255)
+
+            elif shoe_style == "pointed":
+                # 法师：尖头鞋 — 底部逐渐收窄成尖头，优雅弧线
+                for y in range(shoe_top_y, leg_bottom):
+                    if y < 0 or y >= H:
+                        continue
+                    boot_t = (y - shoe_top_y) / max(1, shoe_h - 1)
+                    # 尖头鞋：上部宽（=腿宽），底部收窄并向外延伸1px尖头
+                    taper = int(boot_t * 1.5)  # 底部收窄
+                    # 尖头向外延伸（朝外侧方向）
+                    point_ext = int(boot_t * 2)
+                    if side == "left":
+                        x0 = max(0, leg_x0 - point_ext)
+                        x1 = max(0, min(W, leg_x0 + leg_w - taper))
+                    else:
+                        x0 = max(0, min(W, leg_x0 + taper))
+                        x1 = min(W, leg_x0 + leg_w + point_ext)
+                    for x in range(x0, x1):
+                        if canvas[y][x][3] == 0:
+                            continue
+                        if boot_t < 0.3:
+                            sc = shoe_highlight
+                        elif boot_t > 0.8:
+                            sc = shoe_sole
+                        else:
+                            sc = shoe_color
+                        canvas[y][x] = (*sc, 255)
+
+            elif shoe_style == "hunting":
+                # 弓箭手：猎靴 — 中等宽度，顶部有毛边装饰
+                for y in range(shoe_top_y, leg_bottom):
+                    if y < 0 or y >= H:
+                        continue
+                    boot_t = (y - shoe_top_y) / max(1, shoe_h - 1)
+                    extra_w = int(boot_t * 1.2)
+                    for x in range(max(0, leg_x0 - ps - extra_w), min(W, leg_x0 + leg_w + ps + extra_w)):
+                        if canvas[y][x][3] == 0:
+                            continue
+                        if boot_t < 0.25:
+                            sc = shoe_highlight
+                        elif boot_t > 0.75:
+                            sc = shoe_sole
+                        else:
+                            sc = shoe_color
+                        canvas[y][x] = (*sc, 255)
+                    # 顶部毛边装饰（靴口处1px浅色模拟翻毛/毛皮）
+                    if abs(boot_t - 0.05) < 0.1:
+                        for x in range(max(0, leg_x0 - ps), min(W, leg_x0 + leg_w + ps)):
+                            if canvas[y][x][3] > 0:
+                                canvas[y][x] = (*_warm_shift(shoe_highlight, 20), 255)
+
+            elif shoe_style == "soft":
+                # 盗贼：软底靴 — 贴合腿形，不外扩，低调
+                for y in range(shoe_top_y, leg_bottom):
+                    if y < 0 or y >= H:
+                        continue
+                    boot_t = (y - shoe_top_y) / max(1, shoe_h - 1)
+                    for x in range(max(0, leg_x0), min(W, leg_x0 + leg_w)):
+                        if canvas[y][x][3] == 0:
+                            continue
+                        if boot_t < 0.3:
+                            sc = shoe_highlight
+                        elif boot_t > 0.8:
+                            sc = shoe_sole
+                        else:
+                            sc = shoe_color
+                        canvas[y][x] = (*sc, 255)
+
+            elif shoe_style == "claws":
+                # 怪物：利爪脚 — 底部3个尖爪，不穿鞋
+                claw_color = _warm_shift(accent, 10)  # 爪色偏暖
+                for y in range(shoe_top_y, leg_bottom):
+                    if y < 0 or y >= H:
+                        continue
+                    boot_t = (y - shoe_top_y) / max(1, shoe_h - 1)
+                    for x in range(max(0, leg_x0 - ps), min(W, leg_x0 + leg_w + ps)):
+                        if canvas[y][x][3] == 0:
+                            continue
+                        canvas[y][x] = (*shoe_color, 255)
+                # 利爪：底部最后1-2行，画3个小尖角
+                if leg_bottom - 1 < H and leg_bottom >= 0:
+                    for claw_off in [-1, 0, 1]:  # 3个爪
+                        cx_claw = leg_x0 + leg_w // 2 + claw_off * max(1, leg_w // 3)
+                        for dy in range(2):  # 爪长2px
+                            cy_claw = min(H - 1, leg_bottom - 1 + dy)
+                            if 0 <= cx_claw < W and 0 <= cy_claw < H:
+                                canvas[cy_claw][cx_claw] = (*claw_color, 255)
+
+            else:
+                # plain/NPC/吟游诗人：简单平底鞋 — 与旧版类似但加渐变
+                for y in range(shoe_top_y, leg_bottom):
+                    if y < 0 or y >= H:
+                        continue
+                    boot_t = (y - shoe_top_y) / max(1, shoe_h - 1)
+                    for x in range(max(0, leg_x0 - ps), min(W, leg_x0 + leg_w + ps)):
+                        if canvas[y][x][3] == 0:
+                            continue
+                        if boot_t > 0.7:
+                            sc = shoe_sole
+                        else:
+                            sc = shoe_color
+                        canvas[y][x] = (*sc, 255)
+        
+        # v0.3.27: 手臂恢复躯干偏移cx — 手臂跟随上半身横移
+        if body_dx != 0:
+            cx = torso_cx
         
         # ---- 绘制手臂（v0.3.19: 纵向渐变着色增加立体感） ----
         arm_w = max(ps * 2, int(leg_w * arm_ratio))
