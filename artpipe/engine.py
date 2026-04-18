@@ -2,7 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
-v0.3.38: 手臂Bayer抖动渐变着色(替换3区硬切换,匹配身体/腿部渲染品质)+头发体积渐变着色(后处理法线点积光源方向±12亮度偏移,3D球面光照)
+v0.3.39: 发丝纹理(竖直交替亮暗条纹模拟发丝走向,受光侧增强背光侧柔化)+袖口分色线(衣物/皮肤交界1px深色线,inner separation line增强部件分离感)
 v0.3.34: 周期性眨眼动画(idle/walk/cast末帧闭合眼睑线+抑制高光)+身体椭球法线渐变着色(椭球法线点积光源方向补充横向立体感)
 v0.3.30: HSV色温偏移(高光/阴影色彩分层升级为真正的HSV色相旋转)+修复垂直抖动矩阵为2D索引
 v0.3.26: 关节缝隙阴影(Joint Crease AO,颈部/腰部/肩部衔接处渐变暗化增强部件分离感)
@@ -1763,6 +1763,49 @@ class CharacterEngine:
                         _hp[3]
                     )
         
+        # ---- v0.3.39: 发丝纹理(Strand Texture) — 竖直交替条纹模拟发丝走向 ----
+        # 原理：真实头发由数千根独立发丝组成，在光照下形成规律的光影条纹。
+        #       像素美术经典技法：用交替的亮暗竖条纹模拟发丝走向，是最有效也最常用的
+        #       头发质感提升手法。slynyrd(2024)教程将其列为"必做"技法之一。
+        #       竖条纹让头发从"平面色块"变成"有纤维纹理的表面"，视觉质量飞跃式提升。
+        # 实现：对每个头发像素，根据其X坐标对4取模交替加减亮度(±7)，
+        #       形成每2px宽一组的亮暗交替竖条纹。受光侧条纹加强，背光侧减弱。
+        #       叠加在v0.3.38体积渐变之上，两者正交互补（渐变=球面光照，纹理=发丝走向）。
+        if hair_style != "bald":
+            for y in range(_hgy0, _hgy1):
+                for x in range(_hgx0, _hgx1):
+                    _sp = canvas[y][x]
+                    if _sp[3] == 0:
+                        continue
+                    # 识别头发像素（颜色距离阈值60，兼容体积渐变后的色偏）
+                    _is_hs = False
+                    for _hc in (hair_color, hair_dark, hair_light):
+                        if (abs(int(_sp[0]) - _hc[0]) + abs(int(_sp[1]) - _hc[1]) + abs(int(_sp[2]) - _hc[2])) < 60:
+                            _is_hs = True
+                            break
+                    if not _is_hs:
+                        continue
+                    # 竖直条纹：每4px一个周期，前2px亮(+7)，后2px暗(-7)
+                    # 使用相对于角色中心的X坐标，保证条纹对称居中
+                    _strand_mod = (x - cx) % 4
+                    if _strand_mod < 2:
+                        _strand_off = 7   # 亮条纹（模拟受光发丝束）
+                    else:
+                        _strand_off = -7  # 暗条纹（模拟阴影中的发丝间隙）
+                    # 受光侧(左)增强条纹对比度，背光侧(右)减弱
+                    # 这符合真实光照：受光面高光更锐利，背光面散射使纹理模糊
+                    _h_side = (x - cx) / max(1, head_r + ps)
+                    if _h_side < -0.2:
+                        _strand_off = int(_strand_off * 1.3)  # 受光侧加粗条纹
+                    elif _h_side > 0.2:
+                        _strand_off = int(_strand_off * 0.7)  # 背光侧柔化条纹
+                    canvas[y][x] = (
+                        min(255, max(0, int(_sp[0]) + _strand_off)),
+                        min(255, max(0, int(_sp[1]) + _strand_off)),
+                        min(255, max(0, int(_sp[2]) + _strand_off)),
+                        _sp[3]
+                    )
+        
         # ---- v0.3.37: 发际线轮廓高光(Rim Light) ----
         # 原理：在像素美术中，rim light（边缘光/轮廓光）是专业技法：
         #   - 在物体外轮廓添加一条亮线，模拟背光照射效果
@@ -2444,6 +2487,28 @@ class CharacterEngine:
                 hy = (y - rh_y - hand_h/2) / max(1, hand_h/2)
                 if hx*hx + hy*hy <= 1.0:
                     canvas[y][x] = (*skin_light, 255)
+        
+        # ---- v0.3.39: 袖口分色线(Sleeve Edge Line) — 衣物与皮肤交界处的内部分色线 ----
+        # 原理：像素美术核心技法"内部分色线(inner separation line)"：
+        #       在两种不同材质(布料/皮肤)交界处画1px深色线，让部件分离清晰可读。
+        #       没有这条线，手臂看起来像"涂在"身体上的色块；有了这条线，手臂看起来像
+        #       "从袖子里伸出来的"，有明显的衣物→皮肤材质切换感。
+        #       这在专业像素美术中是"必须做"的细节处理（reference: MortMort, slynyrd）。
+        # 实现：在手臂顶部行(arm_top_y)画1px深色横线，颜色比肤色深35-40单位，
+        #       宽度等于手臂宽度。仅覆盖手臂区域的不透明像素。
+        _sleeve_line_color = (max(0, skin[0] - 35), max(0, skin[1] - 30), max(0, skin[2] - 25))
+        # 左臂袖口线
+        _sl_y_l = arm_top_y + lady
+        if 0 <= _sl_y_l < H:
+            for _slx in range(max(0, _larm_x0), min(W, _larm_x0 + arm_w)):
+                if canvas[_sl_y_l][_slx][3] > 0:
+                    canvas[_sl_y_l][_slx] = (*_sleeve_line_color, 255)
+        # 右臂袖口线
+        _sl_y_r = arm_top_y + rady
+        if 0 <= _sl_y_r < H:
+            for _slx in range(max(0, _rarm_x0), min(W, _rarm_x0 + arm_w)):
+                if canvas[_sl_y_r][_slx][3] > 0:
+                    canvas[_sl_y_r][_slx] = (*_sleeve_line_color, 255)
         
         # ---- 类型专属配件 ----
         # 战士：盾牌
