@@ -4239,6 +4239,71 @@ class CharacterEngine:
                                         min(255, _shadow_base_b + _edge_bright),
                                         sa)
         
+        # ---- v0.3.51: 选择性抗锯齿（Selective Anti-Aliasing）— 专业像素美术的阶梯平滑 ----
+        # 原理：像素美术中，对角线和曲线边缘形成锯齿状"阶梯"(staircase)图案。
+        #       专业像素画家在这些阶梯拐角处放置一个中间色的半透明像素，
+        #       让边缘在视觉上显得更平滑，同时不破坏像素的锐利感。
+        #       这不是全画面抗锯齿——只在轮廓边缘的对角线拐角添加"AA像素"。
+        #       参考：slynyrd(2024)像素教程将此列为"AA像素"必做技法，
+        #             PedrosMedeiros(像素艺术手册)称之为"选择性平滑"。
+        # 检测方法：3×3邻域分析，找到"阶梯拐角"模式：
+        #   模式A(右下阶梯): [空白][实心]    模式B(左下阶梯): [实心][空白]
+        #                    [实心][空白]                      [空白][实心]
+        #   在空白位放置半透明中间色像素，"填充"视觉阶梯。
+        # 仅对描边样式的轮廓生效（pixel/cartoon/anime/dark），无描边样式(western)不处理。
+        if outline is not None:
+            _aa_pass = [[(0,0,0,0)]*W for _ in range(H)]  # AA层：单独收集，避免干扰检测
+            for y in range(1, H - 1):
+                for x in range(1, W - 1):
+                    # 当前像素必须为空（透明），才可能放置AA像素
+                    if canvas[y][x][3] > 0:
+                        continue
+                    # 获取3×3邻域的不透明掩码
+                    _n = [
+                        canvas[y-1][x-1][3] > 0, canvas[y-1][x][3] > 0, canvas[y-1][x+1][3] > 0,
+                        canvas[y][x-1][3] > 0,   False,                  canvas[y][x+1][3] > 0,
+                        canvas[y+1][x-1][3] > 0, canvas[y+1][x][3] > 0, canvas[y+1][x+1][3] > 0,
+                    ]  # 索引: 0=TL 1=T 2=TR 3=L 4=skip 5=R 6=BL 7=B 8=BR
+                    
+                    # 检测4种阶梯拐角模式（每种2个不透明对角+2个透明正交邻居）
+                    _match_color = None
+                    
+                    # 模式1: 右上角 ↗ — TL和R实心，T和L透明
+                    #   [solid][empty][     ]
+                    #   [empty][AA  ][solid]
+                    if _n[0] and _n[5] and not _n[1] and not _n[3]:
+                        _match_color = canvas[y-1][x-1]
+                    # 模式2: 左上角 ↖ — TR和L实心，T和R透明
+                    elif _n[2] and _n[3] and not _n[1] and not _n[5]:
+                        _match_color = canvas[y-1][x+1]
+                    # 模式3: 右下角 ↘ — L和B实心，BL和R透明（实际：BL实/BR透的变体）
+                    #   [     ][empty][     ]
+                    #   [solid][AA  ][empty]
+                    #   [empty][solid][     ]
+                    elif _n[3] and _n[7] and not _n[6] and not _n[5]:
+                        _match_color = canvas[y][x-1]
+                    # 模式4: 左下角 ↙ — R和B实心，BR和L透明
+                    #   [     ][empty][     ]
+                    #   [empty][AA  ][solid]
+                    #   [     ][solid][empty]
+                    elif _n[5] and _n[7] and not _n[8] and not _n[3]:
+                        _match_color = canvas[y][x+1]
+                    
+                    if _match_color is not None and _match_color[3] > 0:
+                        # AA像素：50%透明度的邻近表面色（标准像素美术AA比例）
+                        _aa_alpha = max(40, _match_color[3] // 2)  # 至少40，或原色50%
+                        _aa_pass[y][x] = (
+                            min(255, _match_color[0]),
+                            min(255, _match_color[1]),
+                            min(255, _match_color[2]),
+                            _aa_alpha
+                        )
+            # 将AA层叠加到canvas（仅覆盖透明像素，不破坏已有内容）
+            for y in range(H):
+                for x in range(W):
+                    if _aa_pass[y][x][3] > 0 and canvas[y][x][3] == 0:
+                        canvas[y][x] = _aa_pass[y][x]
+        
         return canvas
 
     def _apply_flash(self, frame, intensity):
