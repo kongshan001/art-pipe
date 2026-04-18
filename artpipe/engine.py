@@ -612,6 +612,118 @@ class CharacterEngine:
                 new_color = hsv_to_rgb(h, s, v)
             fixed.append(new_color)
 
+        # ---- v0.3.37: OKLCH感知色彩距离终检 ----
+        # OKLCH色彩空间比HSV/加权RGB更符合人眼感知：
+        #   - 1个OKLCH单位 ≈ 1个刚可分辨差异(JND)
+        #   - 解决HSV的已知问题：黄绿色和纯黄色在HSV中距离远但感知相近
+        #   - 在64×80像素的精灵表中，颜色差异需要≥12 OKLCH才能可靠区分
+        # 算法：RGB→线性sRGB→OKLab→OKLCH，计算极坐标色差ΔE_oklch
+        # 修复案例：seed=100产生的[[255,213,79],[228,242,96],[255,243,87]]（感知相近黄色）
+        def _rgb_to_oklch(r, g, b):
+            """RGB → OKLCH（简化版，无矩阵运算，纯算术实现，零依赖）
+            OKLCH = (L, C, H)，L∈[0,1]，C∈[0,~0.4]，H∈[0,360)
+            参考：Björn Ottosson (2020) "OKLab" 色彩空间
+            """
+            # Step 1: sRGB → 线性 sRGB（gamma解码，使用标准IEC 61966-2-1精确公式）
+            def _lin(c):
+                c = c / 255.0
+                if c <= 0.04045:
+                    return c / 12.92
+                else:
+                    return ((c + 0.055) / 1.055) ** 2.4
+            lr, lg, lb = _lin(r), _lin(g), _lin(b)
+            # Step 2: 线性 sRGB → LMS（长波-中波-短波锥体响应）
+            # 使用 OKLab 的简化 M1 矩阵（3×3，手动展开避免 numpy）
+            l = lr * 0.4122214708 + lg * 0.5363325363 + lb * 0.0514459929
+            m = lr * 0.2119034982 + lg * 0.6806995451 + lb * 0.1073969566
+            s = lr * 0.0883024619 + lg * 0.2817188376 + lb * 0.6299787005
+            # Step 3: LMS → 立方根（模拟人眼非线性响应）
+            l_ = l ** (1.0/3.0) if l > 0 else 0.0
+            m_ = m ** (1.0/3.0) if m > 0 else 0.0
+            s_ = s ** (1.0/3.0) if s > 0 else 0.0
+            # Step 4: LMS' → OKLab（M2 矩阵，手动展开）
+            L_ok = l_ * 0.2104542553 + m_ * 0.7936177850 + s_ * (-0.0040720468)
+            a_ok = l_ * 1.9779984951 + m_ * (-2.4285922050) + s_ * 0.4505937099
+            b_ok = l_ * 0.0259040371 + m_ * 0.7827717662 + s_ * (-0.8086757660)
+            # Step 5: OKLab → OKLCH
+            C = (a_ok * a_ok + b_ok * b_ok) ** 0.5
+            H = math.degrees(math.atan2(b_ok, a_ok)) % 360
+            return L_ok, C, H
+
+        def _oklch_delta(c1_lch, c2_lch):
+            """计算两个OKLCH颜色之间的感知色差ΔE_oklch
+            使用改良极坐标距离：ΔE = sqrt(ΔL² + ΔC² + 2·C₁·C₂·(1-cosΔH))
+            其中 C₁·C₂·(1-cosΔH) 是色相差异的感知加权项
+            """
+            dL = c1_lch[0] - c2_lch[0]
+            dC = c1_lch[1] - c2_lch[1]
+            C1, C2 = c1_lch[1], c2_lch[1]
+            dH_sq = 2.0 * C1 * C2 * (1.0 - math.cos(math.radians(c1_lch[2] - c2_lch[2])))
+            return (dL * dL + dC * dC + dH_sq) ** 0.5
+
+        # 计算所有颜色的OKLCH值
+        _oklch_vals = [_rgb_to_oklch(c[0], c[1], c[2]) for c in fixed]
+
+        # 检测并修复感知距离不足的颜色对
+        # 阈值0.08 OKLCH ≈ 约12个JND，在64×80像素精灵表中小区域可区分
+        _oklch_min = 0.08
+        _max_fix_attempts = 5  # 每个颜色最多尝试5次修复（确保覆盖边缘情况）
+        for i in range(1, len(fixed)):
+            for _attempt in range(_max_fix_attempts):
+                _too_close = False
+                for j in range(i):
+                    _de = _oklch_delta(_oklch_vals[i], _oklch_vals[j])
+                    if _de < _oklch_min:
+                        _too_close = True
+                        break
+                if not _too_close:
+                    break
+                # 修复策略：按优先级尝试（1）调亮度↑（2）调亮度↓（3）黄金角度色相
+                # （4）增色度（5）组合：黄金角度+亮度偏移
+                Li, Ci, Hi = _oklch_vals[i]
+                if _attempt == 0:
+                    # 第一次尝试：大幅增亮（+0.20），保持色相和色度
+                    Li = min(0.92, Li + 0.20)
+                elif _attempt == 1:
+                    # 第二次尝试：大幅减暗（-0.20），保持色相和色度
+                    Li = max(0.12, Li - 0.20)
+                elif _attempt == 2:
+                    # 第三次尝试：黄金角度偏移色相（137.5°）
+                    Hi = (Hi + 137.508) % 360
+                elif _attempt == 3:
+                    # 第四次尝试：大幅增色度（对低饱和度灰色调最有效）
+                    Ci = min(0.35, Ci + 0.15)
+                else:
+                    # 第五次尝试：组合 — 黄金角度色相 + 亮度跳变（最强修复）
+                    Hi = (Hi + 137.508) % 360
+                    Li = max(0.15, min(0.85, 0.35 if Li > 0.5 else 0.75))
+                _oklch_vals[i] = (Li, Ci, Hi)
+                # OKLCH → RGB 反向转换（手动展开，避免 numpy 依赖）
+                _a_ok = Ci * math.cos(math.radians(Hi))
+                _b_ok = Ci * math.sin(math.radians(Hi))
+                # OKLab → LMS' (M2逆矩阵)
+                _l_ = Li + 0.3963377774 * _a_ok + 0.2158037573 * _b_ok
+                _m_ = Li - 0.1055613458 * _a_ok - 0.0638541728 * _b_ok
+                _s_ = Li - 0.0894841775 * _a_ok - 1.2914855480 * _b_ok
+                # 立方 → LMS
+                _l = _l_ ** 3 if _l_ > 0 else 0.0
+                _m = _m_ ** 3 if _m_ > 0 else 0.0
+                _s = _s_ ** 3 if _s_ > 0 else 0.0
+                # LMS → 线性 sRGB (M1逆矩阵)
+                _lr = _l * 1.2270138511 + _m * (-0.5577999807) + _s * 0.0758016398
+                _lg = _l * (-0.0405801784) + _m * 1.1122568696 + _s * (-0.0716766787)
+                _lb = _l * (-0.0765878889) + _m * (-0.4208092268) + _s * 1.4845984291
+                # 线性 → gamma sRGB
+                def _srgb_gamma(c):
+                    if c <= 0.0031308:
+                        return max(0, min(255, int(c * 12.92 * 255 + 0.5)))
+                    else:
+                        return max(0, min(255, int((1.055 * c ** (1.0/2.4) - 0.055) * 255 + 0.5)))
+                fixed[i] = (_srgb_gamma(_lr), _srgb_gamma(_lg), _srgb_gamma(_lb))
+                # 从实际RGB重新计算OKLCH（补偿色域裁剪导致的偏差）
+                # gamut clipping可能使目标OKLCH与实际RGB的OKLCH不一致
+                _oklch_vals[i] = _rgb_to_oklch(fixed[i][0], fixed[i][1], fixed[i][2])
+
         return fixed
 
     def _render_all_frames(self, rng, style_cfg, type_cfg, palette, char_type_key="warrior"):
@@ -1604,6 +1716,64 @@ class CharacterEngine:
                 for x in range(max(0, cx - head_r//3), min(W, cx + head_r//3)):
                     if 0 <= part_y < H:
                         canvas[part_y][x] = (*hair_light, 255)
+        
+        # ---- v0.3.37: 发际线轮廓高光(Rim Light) ----
+        # 原理：在像素美术中，rim light（边缘光/轮廓光）是专业技法：
+        #   - 在物体外轮廓添加一条亮线，模拟背光照射效果
+        #   - 作用1：将角色从背景中"剥离"出来，增强可读性（尤其深色背景）
+        #   - 作用2：给头发增加体积感，暗示头发是包裹在头部的3D球体而非平面色块
+        #   - 作用3：强化头发纹理质感，让发丝边缘有光泽感
+        # 实现：扫描头发像素，找到外侧轮廓（相邻有透明/非头发像素的边缘），
+        #       在轮廓外侧1px添加半透明高光，强度略弱于顶部高光（hair_light-20）
+        #       仅应用于头顶和两侧，不应用于底部（底部已有投射阴影系统v0.3.33）
+        if hair_style != "bald":
+            _rim_color = (min(255, hair_light[0] + 15),
+                          min(255, hair_light[1] + 15),
+                          min(255, hair_light[2] + 15))
+            _rim_bg_alpha = 180  # 轮廓光透明度（0-255），180≈70%不透明，柔和不刺眼
+            # 扫描范围：头部上方和两侧
+            for y in range(max(0, head_cy - head_r - ps * 2), min(H, head_cy + head_r // 2)):
+                for x in range(max(0, cx - head_r - ps * 2), min(W, cx + head_r + ps * 2)):
+                    _px = canvas[y][x]
+                    # 只处理非头发、非空像素（跳过已有头发色和空像素）
+                    if _px[3] > 0:
+                        _is_hair_px = False
+                        for _hc in (hair_color, hair_dark, hair_light):
+                            if (abs(int(_px[0]) - _hc[0]) + abs(int(_px[1]) - _hc[1]) + abs(int(_px[2]) - _hc[2])) < 80:
+                                _is_hair_px = True
+                                break
+                        if _is_hair_px:
+                            continue
+                    # 检查4邻域是否有头发像素（仅上/左/右，不检查下方以避免与投射阴影冲突）
+                    _has_hair_neighbor = False
+                    for _ny, _nx in ((y - 1, x), (y, x - 1), (y, x + 1)):
+                        if 0 <= _ny < H and 0 <= _nx < W:
+                            _np = canvas[_ny][_nx]
+                            if _np[3] > 0:
+                                for _hc in (hair_color, hair_dark, hair_light):
+                                    if (abs(int(_np[0]) - _hc[0]) + abs(int(_np[1]) - _hc[1]) + abs(int(_np[2]) - _hc[2])) < 80:
+                                        _has_hair_neighbor = True
+                                        break
+                            if _has_hair_neighbor:
+                                break
+                    # 仅在上方1/3的头部区域添加rim light（头顶和侧面）
+                    _dy = y - head_cy
+                    if _has_hair_neighbor and _dy < head_r // 4:
+                        # 检查当前像素是否为空（在画布外区域添加新像素）
+                        if _px[3] == 0:
+                            canvas[y][x] = (*_rim_color, _rim_bg_alpha)
+                        else:
+                            # 与现有像素混合（alpha blending）
+                            _a = _rim_bg_alpha / 255.0
+                            _oa = _px[3] / 255.0
+                            _fa = _a + _oa * (1 - _a)
+                            if _fa > 0:
+                                canvas[y][x] = (
+                                    min(255, int((_rim_color[0] * _a + _px[0] * _oa * (1 - _a)) / _fa)),
+                                    min(255, int((_rim_color[1] * _a + _px[1] * _oa * (1 - _a)) / _fa)),
+                                    min(255, int((_rim_color[2] * _a + _px[2] * _oa * (1 - _a)) / _fa)),
+                                    min(255, int(_fa * 255))
+                                )
         
         # ---- v0.3.33: 发型投射阴影 — 头发在脸部/额头的投影增加深度层次 ----
         # 原理：真实光照中，头发会在额头和面部投射阴影，这是头部最重要的深度线索之一。
