@@ -1,6 +1,7 @@
 """
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
+v0.3.45: 距离场体积AO(BFS曼哈顿距离场3层渐变AO+8方向凹面检测增强, 替代旧版2层硬切换Edge AO)
 纯Python实现，零外部依赖
 v0.3.40: Selout选择性描边(描边色与相邻表面色3:1混合,亮面附近描边微亮/暗面附近保持深色,3D弹出效果)+垂直色温梯度(顶部冷偏移模拟天空环境光R-5/B+5,底部暖偏移模拟地面反射光R+6/G+3/B-3,角色嵌入环境感)
 v0.3.34: 周期性眨眼动画(idle/walk/cast末帧闭合眼睑线+抑制高光)+身体椭球法线渐变着色(椭球法线点积光源方向补充横向立体感)
@@ -3444,31 +3445,74 @@ class CharacterEngine:
                     b2 = min(255, max(0, int(b2)))
                     canvas[y][x] = (r2, g2, b2, a)
         
-        # ---- v0.3.13: 边缘环境光遮蔽（Edge AO）— 增强轮廓立体感 ----
-        # 在角色不透明区域的边缘内侧2像素范围内，添加渐变暗化效果
-        # 模拟真实环境光遮蔽：边缘处环境光更少，显得更暗
-        ao_pass = [[False]*W for _ in range(H)]
+        # ---- v0.3.13→v0.3.45: 距离场体积AO（Distance-Field Volumetric AO）----
+        # 原理：真实环境光遮蔽(Ambient Occlusion)的强度取决于该点与最近暴露面的距离。
+        #       旧版Edge AO仅做2层硬切换（边缘-15/内1px-7），有两个问题：
+        #       1) 渐变不平滑，在像素级别产生明显的色阶跳跃
+        #       2) 不区分凸面(单侧遮挡)和凹面(双侧遮挡)——腋下、下颌下、
+        #          肢体间等凹面区域应该比胳膊外侧获得更深的AO
+        #       新版使用曼哈顿距离场计算每个不透明像素到最近透明像素的距离，
+        #       并统计遮挡邻居数（concavity）调节AO深度：
+        #       - 距离1px（边缘）: 基础AO -15，凹面增强至 -20
+        #       - 距离2px（内层）: AO -10，凹面增强至 -14
+        #       - 距离3px（深层）: AO -5（新增，旧版无此层）
+        #       凹面检测：统计8方向中接触透明/边界的方向数(0-8)，
+        #       ≥3个方向有遮挡视为凹面，AO强度×1.3
+        # 实现：两趟扫描——第一趟BFS从透明像素扩散计算距离场，
+        #       第二趟根据距离+凹度应用AO暗化
+        _ao_max_dist = 3  # AO影响最大距离（像素）
+        _ao_dist = [[_ao_max_dist + 1] * W for _ in range(H)]  # 距离场，初始=远处
+        # 第一趟：BFS从所有透明像素（包括边界外的虚拟透明）向外扩散
+        _ao_queue = []  # BFS队列 (y, x)
+        # 标记透明像素和边界外为距离0
         for y in range(H):
             for x in range(W):
-                if canvas[y][x][3] > 0:
-                    # 检查4方向（上下左右）是否接触透明区域
-                    for ddx, ddy in [(-1,0),(1,0),(0,-1),(0,1)]:
-                        nx2, ny2 = x+ddx, y+ddy
-                        if nx2 < 0 or nx2 >= W or ny2 < 0 or ny2 >= H or canvas[ny2][nx2][3] == 0:
-                            ao_pass[y][x] = True
-                            break
-        # 对边缘像素做AO暗化（-15亮度），向内1像素做轻微AO（-7亮度）
+                if canvas[y][x][3] == 0:
+                    _ao_dist[y][x] = 0
+                    _ao_queue.append((y, x))
+        # BFS扩散（曼哈顿距离）
+        _ao_qi = 0
+        while _ao_qi < len(_ao_queue):
+            _qy, _qx = _ao_queue[_ao_qi]
+            _ao_qi += 1
+            _cd = _ao_dist[_qy][_qx]
+            if _cd >= _ao_max_dist:
+                continue
+            for _ddx, _ddy in ((-1,0),(1,0),(0,-1),(0,1)):
+                _nx, _ny = _qx + _ddx, _qy + _ddy
+                if 0 <= _nx < W and 0 <= _ny < H and _ao_dist[_ny][_nx] > _cd + 1:
+                    _ao_dist[_ny][_nx] = _cd + 1
+                    _ao_queue.append((_ny, _nx))
+        # 第二趟：根据距离+凹度应用AO
+        # 凹度：对每个边缘像素，统计8方向中有多少方向在2px内接触透明
         for y in range(H):
             for x in range(W):
-                if ao_pass[y][x]:
-                    r, g, b, a = canvas[y][x]
-                    canvas[y][x] = (max(0, r-15), max(0, g-15), max(0, b-15), a)
-                    # 向内1像素也做轻微暗化
-                    for ddx, ddy in [(-1,0),(1,0),(0,-1),(0,1)]:
-                        ix, iy = x+ddx, y+ddy
-                        if 0 <= ix < W and 0 <= iy < H and not ao_pass[iy][ix] and canvas[iy][ix][3] > 0:
-                            r3, g3, b3, a3 = canvas[iy][ix]
-                            canvas[iy][ix] = (max(0, r3-7), max(0, g3-7), max(0, b3-7), a3)
+                _d = _ao_dist[y][x]
+                if _d == 0 or _d > _ao_max_dist:
+                    continue  # 透明或距离太远，跳过
+                _px = canvas[y][x]
+                if _px[3] == 0:
+                    continue
+                # 基础AO强度：距离1=-15, 距离2=-10, 距离3=-5（线性衰减）
+                _ao_base = max(2, int(15 * (1.0 - (_d - 1) / _ao_max_dist)))
+                # 凹度检测：统计8方向中接触透明/边界的方向数
+                _concave_count = 0
+                for _ddx, _ddy in ((-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)):
+                    _nx, _ny = x + _ddx, y + _ddy
+                    if _nx < 0 or _nx >= W or _ny < 0 or _ny >= H:
+                        _concave_count += 1  # 边界外视为遮挡
+                    elif _ao_dist[_ny][_nx] <= 1:
+                        _concave_count += 1  # 透明或边缘像素
+                # 凹面增强：≥3个方向有遮挡视为凹面，AO×1.3
+                if _concave_count >= 3:
+                    _ao_base = int(_ao_base * 1.3)
+                # 应用AO暗化
+                canvas[y][x] = (
+                    max(0, _px[0] - _ao_base),
+                    max(0, _px[1] - _ao_base),
+                    max(0, _px[2] - _ao_base),
+                    _px[3]
+                )
         
         # ---- v0.3.14: 边缘背光（Rim Lighting）— 增强轮廓分离和立体感 ----
         # 在角色阴影侧（右侧）的轮廓边缘添加1px暖色高光，
