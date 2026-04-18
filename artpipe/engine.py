@@ -2249,6 +2249,36 @@ class CharacterEngine:
         shoe_highlight = _warm_shift(shoe_color, 10)
         shoe_h = max(ps, leg_h // 3)  # 鞋子高度（从腿底部往上）
 
+        # v0.3.44: 鞋子抖动渐变着色（Shoe Bayer Dithered Gradient）
+        # 与 body/legs/arms 的 Bayer 4×4 抖动矩阵一致
+        # 将鞋子从硬三层渐变（highlight/color/sole）升级为抖动平滑渐变
+        # 过渡带：0.25~0.45(高光→原色), 0.65~0.85(原色→鞋底)
+        _shoe_bayer = [
+            [ 0,  8,  2, 10],
+            [12,  4, 14,  6],
+            [ 3, 11,  1,  9],
+            [15,  7, 13,  5],
+        ]
+
+        def _shoe_dithered_color(boot_t, y, x):
+            """根据垂直位置和 Bayer 抖动计算鞋子颜色"""
+            if boot_t < 0.25:
+                return shoe_highlight
+            elif boot_t < 0.45:
+                # 高光→原色过渡带
+                blend = (boot_t - 0.25) / 0.2
+                threshold = _shoe_bayer[y % 4][x % 4] / 16.0
+                return shoe_color if blend > threshold else shoe_highlight
+            elif boot_t < 0.65:
+                return shoe_color
+            elif boot_t < 0.85:
+                # 原色→鞋底过渡带
+                blend = (boot_t - 0.65) / 0.2
+                threshold = _shoe_bayer[y % 4][x % 4] / 16.0
+                return shoe_sole if blend > threshold else shoe_color
+            else:
+                return shoe_sole
+
         for side in ("left", "right"):
             if side == "left":
                 leg_dx, leg_dy = ldx, ldy
@@ -2275,13 +2305,8 @@ class CharacterEngine:
                             # 检查是否在鞋区域内（半透明像素也覆盖）
                             if canvas[y][x][3] == 0:
                                 continue
-                            # 三层渐变：上部shoe_highlight → 中部shoe_color → 底部shoe_sole
-                            if boot_t < 0.3:
-                                sc = shoe_highlight
-                            elif boot_t > 0.75:
-                                sc = shoe_sole
-                            else:
-                                sc = shoe_color
+                            # v0.3.44: 抖动渐变替代硬三层渐变
+                            sc = _shoe_dithered_color(boot_t, y, x)
                             canvas[y][x] = (*sc, 255)
                     # 底部最后一行加厚鞋底线（深色）
                     if y == leg_bottom - 1:
@@ -2300,12 +2325,8 @@ class CharacterEngine:
                     for x in range(max(0, leg_x0 - ps - extra_w), min(W, leg_x0 + leg_w + ps + extra_w)):
                         if canvas[y][x][3] == 0:
                             continue
-                        if boot_t < 0.25:
-                            sc = shoe_highlight
-                        elif boot_t > 0.7:
-                            sc = shoe_sole
-                        else:
-                            sc = shoe_color
+                        # v0.3.44: 抖动渐变替代硬三层渐变
+                        sc = _shoe_dithered_color(boot_t, y, x)
                         canvas[y][x] = (*sc, 255)
                     # 铁扣装饰线（靴子中部1px横向亮线，模拟金属扣环）
                     if abs(boot_t - 0.4) < 0.15 and leg_x0 + leg_w + extra_w < W:
@@ -2334,12 +2355,8 @@ class CharacterEngine:
                     for x in range(x0, x1):
                         if canvas[y][x][3] == 0:
                             continue
-                        if boot_t < 0.3:
-                            sc = shoe_highlight
-                        elif boot_t > 0.8:
-                            sc = shoe_sole
-                        else:
-                            sc = shoe_color
+                        # v0.3.44: 抖动渐变替代硬三层渐变
+                        sc = _shoe_dithered_color(boot_t, y, x)
                         canvas[y][x] = (*sc, 255)
 
             elif shoe_style == "hunting":
@@ -2352,12 +2369,8 @@ class CharacterEngine:
                     for x in range(max(0, leg_x0 - ps - extra_w), min(W, leg_x0 + leg_w + ps + extra_w)):
                         if canvas[y][x][3] == 0:
                             continue
-                        if boot_t < 0.25:
-                            sc = shoe_highlight
-                        elif boot_t > 0.75:
-                            sc = shoe_sole
-                        else:
-                            sc = shoe_color
+                        # v0.3.44: 抖动渐变替代硬三层渐变
+                        sc = _shoe_dithered_color(boot_t, y, x)
                         canvas[y][x] = (*sc, 255)
                     # 顶部毛边装饰（靴口处1px浅色模拟翻毛/毛皮）
                     if abs(boot_t - 0.05) < 0.1:
@@ -2374,12 +2387,8 @@ class CharacterEngine:
                     for x in range(max(0, leg_x0), min(W, leg_x0 + leg_w)):
                         if canvas[y][x][3] == 0:
                             continue
-                        if boot_t < 0.3:
-                            sc = shoe_highlight
-                        elif boot_t > 0.8:
-                            sc = shoe_sole
-                        else:
-                            sc = shoe_color
+                        # v0.3.44: 抖动渐变替代硬三层渐变
+                        sc = _shoe_dithered_color(boot_t, y, x)
                         canvas[y][x] = (*sc, 255)
 
             elif shoe_style == "claws":
@@ -2411,10 +2420,8 @@ class CharacterEngine:
                     for x in range(max(0, leg_x0 - ps), min(W, leg_x0 + leg_w + ps)):
                         if canvas[y][x][3] == 0:
                             continue
-                        if boot_t > 0.7:
-                            sc = shoe_sole
-                        else:
-                            sc = shoe_color
+                        # v0.3.44: 抖动渐变替代硬两层渐变
+                        sc = _shoe_dithered_color(boot_t, y, x)
                         canvas[y][x] = (*sc, 255)
         
         # v0.3.27: 手臂恢复躯干偏移cx — 手臂跟随上半身横移
@@ -3565,12 +3572,17 @@ class CharacterEngine:
                 if cleanup_pass[y][x]:
                     canvas[y][x] = (0, 0, 0, 0)
         
-        # ---- v0.3.23: 调色板色彩快照（Palette Snap）— 增强色彩统一性和像素艺术质感 ----
+        # ---- v0.3.23→v0.3.44: 调色板色彩快照（OKLCH Palette Snap）— 感知距离色彩量化 ----
         # 将角色像素颜色量化到调色板附近的有限色阶，减少后处理引入的连续色调噪点
         # 原理：经过光照/AO/rim等多pass处理后，原始调色板的离散颜色被渐变为连续色，
         #       导致像素画看起来像缩小的位图而非真正的像素美术。本pass将颜色重新snap到
         #       调色板色阶上，保留光照方向但消除过度平滑。
-        # 方法：对每个不透明像素，找到其在调色板扩展色阶（亮/中/暗三层）中最近的匹配色
+        # v0.3.44: 使用OKLCH感知色彩空间距离替代RGB加权欧氏距离
+        #   - OKLCH比RGB更符合人眼感知：相同ΔE值在任何色相区域都对应相同视觉差异
+        #   - 解决RGB距离的已知问题：蓝色区域过度敏感（RGB距离夸大蓝色差异），
+        #     黄色区域不敏感（RGB距离低估黄色差异），导致snap偏色
+        #   - OKLCH极坐标距离公式：ΔE = sqrt(ΔL² + ΔC² + 2·C₁·C₂·(1-cosΔH))
+        #   - 阈值0.015 OKLCH ≈ 2-3 JND（刚可分辨差异），足够保留光照梯度但消除噪点
         if palette and len(palette) >= 4:
             # 构建扩展调色板：每个调色板色生成3个亮度层
             # v0.3.25: 使用色相偏移而非均匀RGB偏移，与渲染颜色分层一致
@@ -3595,23 +3607,57 @@ class CharacterEngine:
                     unique_snap.append(c)
             snap_palette = unique_snap
 
+            # v0.3.44: 预计算所有调色板色的OKLCH值，避免内循环重复计算
+            def _snap_rgb_to_oklch(r, g, b):
+                """RGB → OKLCH（简化版，纯算术，零依赖）"""
+                def _lin(c):
+                    c = c / 255.0
+                    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+                lr, lg, lb = _lin(r), _lin(g), _lin(b)
+                l = lr * 0.4122214708 + lg * 0.5363325363 + lb * 0.0514459929
+                m = lr * 0.2119034982 + lg * 0.6806995451 + lb * 0.1073969566
+                s = lr * 0.0883024619 + lg * 0.2817188376 + lb * 0.6299787005
+                l_ = l ** (1.0/3.0) if l > 0 else 0.0
+                m_ = m ** (1.0/3.0) if m > 0 else 0.0
+                s_ = s ** (1.0/3.0) if s > 0 else 0.0
+                L = l_ * 0.2104542553 + m_ * 0.7936177850 + s_ * (-0.0040720468)
+                a_ok = l_ * 1.9779984951 + m_ * (-2.4285922050) + s_ * 0.4505937099
+                b_ok = l_ * 0.0259040371 + m_ * 0.7827717662 + s_ * (-0.8086757660)
+                C = (a_ok * a_ok + b_ok * b_ok) ** 0.5
+                H = math.degrees(math.atan2(b_ok, a_ok)) % 360
+                return L, C, H
+
+            snap_oklch = [_snap_rgb_to_oklch(c[0], c[1], c[2]) for c in snap_palette]
+            # 预计算OKLCH缓存：对于每个不透明像素，仅计算一次OKLCH值
+            # 缓存用字典存储，key=(r,g,b)
+            _oklch_cache = {}
+
             for y in range(H):
                 for x in range(W):
                     r, g, b, a = canvas[y][x]
                     if a == 0:
                         continue
-                    # 找最近调色板色（加权欧氏距离，绿色通道权重×2）
+                    # 查缓存或计算像素的OKLCH值
+                    _px_key = (r, g, b)
+                    if _px_key not in _oklch_cache:
+                        _oklch_cache[_px_key] = _snap_rgb_to_oklch(r, g, b)
+                    px_lch = _oklch_cache[_px_key]
+                    # 找最近调色板色（OKLCH极坐标感知距离）
                     best_dist = float('inf')
                     best_color = (r, g, b)
-                    for sc in snap_palette:
-                        dr_s, dg_s, db_s = r - sc[0], g - sc[1], b - sc[2]
-                        d = dr_s*dr_s + 2*dg_s*dg_s + db_s*db_s
+                    for idx, sc in enumerate(snap_palette):
+                        sc_lch = snap_oklch[idx]
+                        dL = px_lch[0] - sc_lch[0]
+                        dC = px_lch[1] - sc_lch[1]
+                        C1, C2 = px_lch[1], sc_lch[1]
+                        dH_sq = 2.0 * C1 * C2 * (1.0 - math.cos(math.radians(px_lch[2] - sc_lch[2])))
+                        d = (dL * dL + dC * dC + dH_sq) ** 0.5
                         if d < best_dist:
                             best_dist = d
                             best_color = sc
-                    # 仅当距离超过阈值时才snap（避免过近颜色被不必要地替换）
-                    # 阈值设为600 ≈ RGB距离约20，足够保留光照梯度但消除噪点
-                    if best_dist > 200:
+                    # 仅当OKLCH距离超过阈值时才snap
+                    # 0.015 OKLCH ≈ 2-3 JND，保留光照梯度但消除连续色调噪点
+                    if best_dist > 0.015:
                         canvas[y][x] = (*best_color, a)
 
         # ---- v0.3.23: 头部镜面高光（Specular Highlight）— 增强面部立体感 ----
