@@ -117,7 +117,7 @@ CHAR_TYPES = {
         "body_ratio": 0.90,  # 纤细身体
         "leg_ratio": 1.15,   # 修长腿
         "arm_ratio": 0.95,   # 细长手臂
-        "accessories": ["scarf", "collar", "earing", "wrist_guards"],  # v0.3.35: 新增护腕
+        "accessories": ["scarf", "collar", "earing", "wrist_guards", "cloak"],  # v0.3.39: 新增斗篷
     },
     "archer": {
         "name": "弓箭手", "head_ratio": 0.19, "body_w": 0.25,
@@ -172,7 +172,7 @@ CHAR_TYPES = {
         "body_ratio": 1.25,  # 最宽壮躯干
         "leg_ratio": 0.85,   # 短粗稳固腿
         "arm_ratio": 1.15,   # 强壮手臂
-        "accessories": ["belt", "shoulder_pads", "collar", "belt_pouch", "wrist_guards"],  # v0.3.35: 新增护腕
+        "accessories": ["belt", "shoulder_pads", "collar", "belt_pouch", "wrist_guards", "cloak"],  # v0.3.39: 新增斗篷
     },
     # v0.3.17: 新增吟游诗人 — 轻巧辅助型角色
     "bard": {
@@ -182,7 +182,7 @@ CHAR_TYPES = {
         "body_ratio": 0.88,  # 纤细身材
         "leg_ratio": 1.05,   # 灵活腿
         "arm_ratio": 1.00,   # 匀称手臂
-        "accessories": ["scarf", "earing", "collar", "belt"],
+        "accessories": ["scarf", "earing", "collar", "belt", "cloak"],  # v0.3.39: 新增斗篷
     },
 }
 
@@ -318,7 +318,7 @@ class CharacterEngine:
             j = rng.int_range(0, i)
             base_palette[i], base_palette[j] = base_palette[j], base_palette[i]
         # 色彩和谐度优化：基于主色生成互补/类似色增强
-        base_palette = self._harmonize_palette(base_palette, rng)
+        base_palette = self._harmonize_palette(base_palette, rng, ct)
         
         char_id = f"char_{int(time.time())}_{seed % 10000}"
         
@@ -456,7 +456,7 @@ class CharacterEngine:
             print(f"[Engine] AI generation failed: {e}")
             return None
 
-    def _harmonize_palette(self, palette, rng):
+    def _harmonize_palette(self, palette, rng, char_type_key="warrior"):
         """v0.3.18: 基于感知色彩理论的增强色相和谐算法
         v0.3.5: HSV色相和谐 — 类似色/三角色/分裂互补/四方色
         v0.3.18: 新增感知色彩质量修正：
@@ -666,8 +666,20 @@ class CharacterEngine:
         _oklch_vals = [_rgb_to_oklch(c[0], c[1], c[2]) for c in fixed]
 
         # 检测并修复感知距离不足的颜色对
-        # 阈值0.08 OKLCH ≈ 约12个JND，在64×80像素精灵表中小区域可区分
-        _oklch_min = 0.08
+        # v0.3.43: 按角色类型差异化OKLCH阈值
+        #   warrior/knight: 0.12 ≈ 18 JND — 大胆对比，突出力量感
+        #   rogue/archer:   0.09 ≈ 14 JND — 中等对比，灵动但不花哨
+        #   mage/healer:    0.06 ≈ 9 JND  — 柔和和谐，神秘/治愈气质
+        #   monster:        0.10 ≈ 15 JND — 鲜明对比，突出危险感
+        #   npc/bard:       0.08 ≈ 12 JND — 默认值，通用平衡
+        _OKLCH_THRESHOLDS = {
+            "warrior": 0.12, "knight": 0.12,
+            "rogue": 0.09, "archer": 0.09,
+            "mage": 0.06, "healer": 0.06,
+            "monster": 0.10,
+            "npc": 0.08, "bard": 0.08,
+        }
+        _oklch_min = _OKLCH_THRESHOLDS.get(char_type_key, 0.08)
         _max_fix_attempts = 5  # 每个颜色最多尝试5次修复（确保覆盖边缘情况）
         for i in range(1, len(fixed)):
             for _attempt in range(_max_fix_attempts):
@@ -2931,6 +2943,59 @@ class CharacterEngine:
                 buckle_y2 = rg_y + guard_h // 2
                 if 0 <= buckle_x2 < W and 0 <= buckle_y2 < H:
                     canvas[buckle_y2][buckle_x2] = guard_highlight
+
+            elif acc == "cloak":
+                # v0.3.39: 斗篷 — 从肩部两侧垂落的宽松外袍，增强角色戏剧感
+                # 设计：比cape更宽，两侧对称，从肩部延伸到膝盖，带波浪褶皱
+                cloak_color = (*accent_dark, 255)
+                cloak_highlight = (
+                    min(255, accent_dark[0] + 18),
+                    min(255, accent_dark[1] + 14),
+                    min(255, accent_dark[2] + 10), 255)
+                cloak_shadow = (
+                    max(0, accent_dark[0] - 20),
+                    max(0, accent_dark[1] - 18),
+                    max(0, accent_dark[2] - 15), 255)
+                cloak_w = max(ps * 2, arm_w + ps)  # 斗篷宽度略宽于手臂
+                cloak_top = body_top - ps  # 从肩部开始
+                cloak_bot = min(H, body_bot + leg_h // 2)  # 延伸到膝盖
+                # 左侧斗篷（身体左侧外沿）
+                for y in range(max(0, cloak_top), cloak_bot):
+                    # 波浪褶皱效果：宽度随y轴正弦波动
+                    wave = int(math.sin((y - cloak_top) * 0.25 + seed * 0.1) * ps)
+                    left_x = max(0, cx - body_w // 2 - cloak_w + wave)
+                    right_x = max(0, cx - body_w // 2 - ps // 2 + wave)
+                    for x in range(left_x, min(W, right_x)):
+                        if 0 <= x < W and 0 <= y < H and canvas[y][x][3] == 0:
+                            # 渐变着色：中心亮，边缘暗
+                            dist_from_edge = x - left_x
+                            total_w = right_x - left_x
+                            if total_w > 0 and dist_from_edge > total_w * 0.6:
+                                canvas[y][x] = cloak_highlight
+                            elif total_w > 0 and dist_from_edge < total_w * 0.25:
+                                canvas[y][x] = cloak_shadow
+                            else:
+                                canvas[y][x] = cloak_color
+                # 右侧斗篷（身体右侧外沿）
+                for y in range(max(0, cloak_top), cloak_bot):
+                    wave = int(math.sin((y - cloak_top) * 0.25 + seed * 0.1 + 1.5) * ps)
+                    left_x2 = min(W, cx + body_w // 2 + ps // 2 + wave)
+                    right_x2 = min(W, cx + body_w // 2 + cloak_w + wave)
+                    for x in range(max(0, left_x2), min(W, right_x2)):
+                        if 0 <= x < W and 0 <= y < H and canvas[y][x][3] == 0:
+                            dist_from_edge = right_x2 - x
+                            total_w = right_x2 - left_x2
+                            if total_w > 0 and dist_from_edge > total_w * 0.6:
+                                canvas[y][x] = cloak_highlight
+                            elif total_w > 0 and dist_from_edge < total_w * 0.25:
+                                canvas[y][x] = cloak_shadow
+                            else:
+                                canvas[y][x] = cloak_color
+                # 斗篷领扣（颈部前方的装饰扣环）
+                clasp_y = cloak_top + ps
+                clasp_x = cx
+                if 0 <= clasp_x < W and 0 <= clasp_y < H:
+                    canvas[clasp_y][clasp_x] = (*accent_light, 255)
 
         # ---- 武器（v0.3.6: 跟随右臂偏移 + weapon_angle旋转） ----
         weapon = type_cfg.get("weapon", "none")
