@@ -2,6 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
+v0.3.38: 手臂Bayer抖动渐变着色(替换3区硬切换,匹配身体/腿部渲染品质)+头发体积渐变着色(后处理法线点积光源方向±12亮度偏移,3D球面光照)
 v0.3.34: 周期性眨眼动画(idle/walk/cast末帧闭合眼睑线+抑制高光)+身体椭球法线渐变着色(椭球法线点积光源方向补充横向立体感)
 v0.3.30: HSV色温偏移(高光/阴影色彩分层升级为真正的HSV色相旋转)+修复垂直抖动矩阵为2D索引
 v0.3.26: 关节缝隙阴影(Joint Crease AO,颈部/腰部/肩部衔接处渐变暗化增强部件分离感)
@@ -1717,6 +1718,51 @@ class CharacterEngine:
                     if 0 <= part_y < H:
                         canvas[part_y][x] = (*hair_light, 255)
         
+        # ---- v0.3.38: 头发体积渐变着色（Hair Volumetric Gradient） ----
+        # 原理：头发包裹在头部球体上方，应有与头部类似的3D光照效果。
+        #       目前头发使用flat纯色（hair_color），缺乏立体感，看起来像"贴片"。
+        #       本后处理对所有头发像素施加基于位置的亮度偏移：
+        #       - 靠近光源方向（左上）的头发像素变亮
+        #       - 远离光源方向（右下）的头发像素变暗
+        #       与v0.3.21头部球面法线使用同一光源方向(-0.5, -0.7)
+        # 实现：扫描头发区域像素，通过颜色距离识别hair_color/hair_dark/hair_light像素，
+        #       计算与头心的偏移→法线点积→亮度偏移(±12)，模拟头发球面光照
+        if hair_style != "bald":
+            _hgx0 = max(0, cx - head_r - ps * 3)
+            _hgx1 = min(W, cx + head_r + ps * 3)
+            _hgy0 = max(0, head_cy - head_r - ps * 5)
+            _hgy1 = min(H, head_cy + head_r + ps * 2)
+            for y in range(_hgy0, _hgy1):
+                for x in range(_hgx0, _hgx1):
+                    _hp = canvas[y][x]
+                    if _hp[3] == 0:
+                        continue
+                    # 识别头发像素：检查是否匹配hair_color/hair_dark/hair_light（颜色距离<50）
+                    _is_h = False
+                    for _hc in (hair_color, hair_dark, hair_light):
+                        if (abs(int(_hp[0]) - _hc[0]) + abs(int(_hp[1]) - _hc[1]) + abs(int(_hp[2]) - _hc[2])) < 50:
+                            _is_h = True
+                            break
+                    if not _is_h:
+                        continue
+                    # 计算与头心的偏移
+                    _hdx = x - cx
+                    _hdy = y - head_cy
+                    # 使用与v0.3.21相同的光源方向
+                    _hinv_r = 1.0 / max(1, head_r + ps)
+                    _hnx = _hdx * _hinv_r
+                    _hny = _hdy * _hinv_r
+                    # 光源方向(归一化)：与头部球面着色一致
+                    _hdot = _hnx * _lx + _hny * _ly
+                    # 亮度偏移：±12（比头部的±16略弱，头发纹理更柔和）
+                    _hbright = int(_hdot * 12)
+                    canvas[y][x] = (
+                        min(255, max(0, int(_hp[0]) + _hbright)),
+                        min(255, max(0, int(_hp[1]) + _hbright)),
+                        min(255, max(0, int(_hp[2]) + _hbright)),
+                        _hp[3]
+                    )
+        
         # ---- v0.3.37: 发际线轮廓高光(Rim Light) ----
         # 原理：在像素美术中，rim light（边缘光/轮廓光）是专业技法：
         #   - 在物体外轮廓添加一条亮线，模拟背光照射效果
@@ -2320,36 +2366,58 @@ class CharacterEngine:
         if body_dx != 0:
             cx = torso_cx
         
-        # ---- 绘制手臂（v0.3.19: 纵向渐变着色增加立体感） ----
+        # ---- 绘制手臂（v0.3.38: Bayer抖动渐变着色，匹配身体和腿部渲染品质） ----
+        # v0.3.19 原有3区硬切换(0.3/0.7阈值)替换为Bayer有序抖动渐变
+        # 与v0.3.36腿部升级和身体渲染使用相同的过渡算法，消除手臂色带分界线
         arm_w = max(ps * 2, int(leg_w * arm_ratio))
         arm_top_y = body_top + ps
         arm_bot_y = body_bot - ps
         arm_h = max(1, arm_bot_y - arm_top_y)
-        # 左臂（带偏移 + 纵向渐变：顶部受光偏亮，底部阴影偏暗）
+        # Bayer 4x4 抖动矩阵（与身体、腿部使用同一矩阵）
+        _arm_dither = [
+            [ 0,  8,  2, 10],
+            [12,  4, 14,  6],
+            [ 3, 11,  1,  9],
+            [15,  7, 13,  5],
+        ]
+        def _arm_color_at(arm_t, local_y, local_x):
+            """根据纵向位置arm_t和像素坐标计算手臂颜色（Bayer抖动渐变）"""
+            dt = _arm_dither[local_y % 4][local_x % 4] / 16.0
+            if arm_t < 0.15:
+                return skin_light
+            elif arm_t < 0.35:
+                # 高光→原色过渡带
+                blend = (arm_t - 0.15) / 0.20
+                return skin if blend > dt else skin_light
+            elif arm_t < 0.60:
+                return skin
+            elif arm_t < 0.80:
+                # 原色→深色过渡带
+                blend = (arm_t - 0.60) / 0.20
+                return skin_dark if blend > dt else skin
+            else:
+                return skin_dark
+        # 左臂（带偏移 + Bayer抖动渐变：顶部受光偏亮，底部阴影偏暗）
         ladx, lady = pose["left_arm_dx"], pose["left_arm_dy"]
+        _larm_x0 = cx - body_w//2 - arm_w + ladx
         for y in range(arm_top_y + lady, min(H, arm_bot_y + lady)):
             arm_t = (y - arm_top_y - lady) / max(1, arm_h - 1)  # 0=顶 1=底
-            if arm_t < 0.3:
-                arm_c = skin_light
-            elif arm_t > 0.7:
-                arm_c = skin_dark
-            else:
-                arm_c = skin
-            for x in range(max(0, cx - body_w//2 - arm_w + ladx), min(W, cx - body_w//2 + ladx)):
+            _ay = y - (arm_top_y + lady)  # 手臂局部Y坐标
+            for x in range(max(0, _larm_x0), min(W, _larm_x0 + arm_w)):
                 if 0 <= y < H:
+                    _ax = x - _larm_x0  # 手臂局部X坐标
+                    arm_c = _arm_color_at(arm_t, _ay, _ax)
                     canvas[y][x] = (*arm_c, 255)
-        # 右臂（带偏移 + 纵向渐变，武器侧）
+        # 右臂（带偏移 + Bayer抖动渐变，武器侧）
         radx, rady = pose["right_arm_dx"], pose["right_arm_dy"]
+        _rarm_x0 = cx + body_w//2 + radx
         for y in range(arm_top_y + rady, min(H, arm_bot_y + rady)):
             arm_t = (y - arm_top_y - rady) / max(1, arm_h - 1)  # 0=顶 1=底
-            if arm_t < 0.3:
-                arm_c = skin_light
-            elif arm_t > 0.7:
-                arm_c = skin_dark
-            else:
-                arm_c = skin
-            for x in range(cx + body_w//2 + radx, min(W, cx + body_w//2 + arm_w + radx)):
+            _ay = y - (arm_top_y + rady)  # 手臂局部Y坐标
+            for x in range(max(0, _rarm_x0), min(W, _rarm_x0 + arm_w)):
                 if 0 <= y < H:
+                    _ax = x - _rarm_x0  # 手臂局部X坐标
+                    arm_c = _arm_color_at(arm_t, _ay, _ax)
                     canvas[y][x] = (*arm_c, 255)
         
         # ---- v0.3.24: 手部渲染 — 手臂末端添加手掌细节增加完成度 ----
