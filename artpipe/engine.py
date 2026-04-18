@@ -1143,6 +1143,10 @@ class CharacterEngine:
         elif anim == "attack":
             # 攻击：右臂（武器侧）前伸 → 收回（v0.3.6: 身体前冲+头部后仰分离）
             # v0.3.22: 蓄力用ease-in（缓慢蓄势），挥出用ease-out（快速爆发后减速）
+            # v0.3.69: 水平重心位移(body_dx) — 蓄力后坐→挥出前冲，增加打击方向感和重量感
+            #          原理：攻击不是原地挥动，身体重心会先向后蓄力再向前释放，
+            #          这是格斗游戏的"anticipation-release"模式（类似拳皇/街霸），
+            #          body_dx让整个上半身水平移动，配合头发/斗篷的次级运动增强动态感。
             # t: 0=蓄力, 0.4=挥出, 1.0=收回
             if t < 0.4:
                 # 蓄力阶段：武器后拉，身体微微后坐（ease-in缓慢蓄势）
@@ -1153,6 +1157,8 @@ class CharacterEngine:
                 pose["weapon_angle"] = -swing * 0.5
                 pose["body_dy"] = int(swing * 1)  # 后坐
                 pose["head_dy"] = int(swing * 1)  # 头随身体
+                # v0.3.69: 蓄力时身体后移1px（重心蓄力→后坐位移动画感）
+                pose["body_dx"] = -int(swing * 1)
             else:
                 # 挥出阶段：快速前刺，身体前冲但头部保持（ease-out快速爆发）
                 # v0.3.64: 身体前冲使用ease_out_back过冲，模拟武器惯性回弹
@@ -1166,6 +1172,8 @@ class CharacterEngine:
                 pose["body_dy"] = -int(min(3, ov * 2 + 0.5))  # 过冲：最大-3px，稳定在-2px
                 pose["head_dy"] = int(max(0, 1 - swing * 2))  # 头部略微后仰后恢复
                 pose["weapon_angle"] = (1 - retract) * 1.0
+                # v0.3.69: 挥出时身体前冲2px，ease_out_back过冲回弹（先冲到~2.5px再回弹到2px）
+                pose["body_dx"] = int(min(2, ov * 2))
             # 前冲时左腿后蹬
             if t > 0.3:
                 pose["left_leg_dx"] = -2
@@ -4219,6 +4227,46 @@ class CharacterEngine:
                     if 0 <= _spark_py < H and 0 <= _spark_px < W and _spark_alpha > 15:
                         if canvas[_spark_py][_spark_px][3] == 0:  # 不覆盖角色像素
                             canvas[_spark_py][_spark_px] = (_spark_r, _spark_g, _spark_b, _spark_alpha)
+        
+        # ---- v0.3.69: 腋窝层间投射阴影(Axilla Inter-Part Cast Shadow) — 手臂在躯干上的定向投影 ----
+        # 原理：真实光照中，抬起的物体会在其下方表面投射阴影。手臂与躯干之间
+        #       形成的腋窝区域应该比周围更暗，因为来自主光源（左上方）的光线
+        #       被手臂本身遮挡。这是经典的"cast shadow"（投射阴影）——不同于AO（环境光遮蔽），
+        #       投射阴影具有明确的方向性：光源左上方→阴影出现在手臂右下方。
+        #       这让手臂与身体的衔接更立体，增强"手臂是独立立体部件浮在身体前方"的深度层次。
+        # 实现：在手臂绘制区域下方、身体区域内部，按光源方向偏移检测手臂遮挡，
+        #       对被手臂阴影覆盖的身体像素施加柔和暗化（-12~-18亮度，带距离衰减）。
+        #       左臂（远离光源侧）阴影较弱（手臂本身在阴影面），右臂（靠近光源侧）阴影较强。
+        _axilla_shadow_radius = 3  # 阴影扩散半径（像素）
+        _axilla_search_y_start = body_top + ps
+        _axilla_search_y_end = body_top + body_draw_h // 2  # 只在上半身（手臂连接区域）
+        # 构建不透明掩码，区分手臂/身体区域
+        for _as_y in range(max(0, _axilla_search_y_start), min(H, _axilla_search_y_end)):
+            for _as_x in range(max(0, cx - body_draw_w - arm_w - 2), min(W, cx + body_draw_w + arm_w + 2)):
+                _as_px = canvas[_as_y][_as_x]
+                if _as_px[3] == 0:
+                    continue  # 跳过透明像素
+                # 检查左上方是否有手臂像素（主光源从左上方照射→手臂阴影投向右下方）
+                # 检查偏移位置(+1,+1)是否有不透明像素（代表手臂）
+                _as_occluded = False
+                _as_strength = 0
+                for _as_dy, _as_dx, _as_w in [(1, 1, 1.0), (1, 2, 0.6), (2, 1, 0.4)]:
+                    _as_check_y = _as_y - _as_dy
+                    _as_check_x = _as_x - _as_dx
+                    if 0 <= _as_check_y < H and 0 <= _as_check_x < W:
+                        if canvas[_as_check_y][_as_check_x][3] > 0:
+                            # 检查该像素是否在身体外侧（即手臂区域）
+                            _as_rel_x = abs(_as_check_x - (cx + body_dx))
+                            if _as_rel_x > body_draw_w // 2:
+                                _as_occluded = True
+                                _as_strength = max(_as_strength, _as_w)
+                if _as_occluded and _as_strength > 0:
+                    # 该像素在身体区域内、被手臂遮挡 → 暗化
+                    _as_dark = int(15 * _as_strength)
+                    _as_r = max(0, _as_px[0] - _as_dark)
+                    _as_g = max(0, _as_px[1] - _as_dark - 2)  # 冷偏移：蓝少减→偏冷
+                    _as_b = max(0, _as_px[2] - _as_dark)
+                    canvas[_as_y][_as_x] = (_as_r, _as_g, _as_b, _as_px[3])
         
         # ---- 描边（v0.3.29: 深度加权描边 — 底部粗顶部细，增强空间层次感） ----
         # 原理：像素美术最佳实践中，角色底部（脚/腿）比顶部（头/发）更靠近地面，
