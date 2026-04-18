@@ -1,7 +1,7 @@
 """
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
-v0.3.45: 距离场体积AO(BFS曼哈顿距离场3层渐变AO+8方向凹面检测增强, 替代旧版2层硬切换Edge AO)
+v0.3.46: 选择性眼睛发光(Selective Eye Glow,眼睛高光2px半径bloom散射冷白光晕模拟Hollow Knight/Ori锐利眼神)+服装褶皱暗示线(Clothing Fold Implication,V形垂坠褶皱暗线从肩向腰收敛增强面料立体质感)
 纯Python实现，零外部依赖
 v0.3.40: Selout选择性描边(描边色与相邻表面色3:1混合,亮面附近描边微亮/暗面附近保持深色,3D弹出效果)+垂直色温梯度(顶部冷偏移模拟天空环境光R-5/B+5,底部暖偏移模拟地面反射光R+6/G+3/B-3,角色嵌入环境感)
 v0.3.34: 周期性眨眼动画(idle/walk/cast末帧闭合眼睑线+抑制高光)+身体椭球法线渐变着色(椭球法线点积光源方向补充横向立体感)
@@ -3783,6 +3783,117 @@ class CharacterEngine:
                     min(255, max(0, b + sss_b)),
                     a
                 )
+
+        # ---- v0.3.46: 选择性眼睛发光（Selective Eye Glow）— Hollow Knight/Ori风格的锐利眼神光 ----
+        # 原理：在《空洞骑士》《奥日》等知名像素/独立游戏中，角色眼睛具有一种独特的
+        #       "发光感"——不是简单的白色高光，而是高光周围散发柔和的辐射光芒。
+        #       这种效果在视觉上让角色的眼睛成为画面的视觉焦点，赋予角色"灵魂感"。
+        #       技术本质是一种局部bloom（泛光）效果：检测高亮度像素（眼睛高光），
+        #       在其周围区域叠加渐变衰减的半透明亮色，模拟光晕散射。
+        # 实现：扫描画布找到眼睛主高光(255,255,255)和副高光(210,225,255)像素，
+        #       在其周围2-3px半径内叠加微暖的加法光晕，强度随距离二次衰减。
+        #       光晕颜色偏冷白（R220,G230,B255），营造水晶般的清透感。
+        _eye_glow_points = []  # 收集所有眼睛高光点坐标
+        for y in range(H):
+            for x in range(W):
+                cr, cg, cb, ca = canvas[y][x]
+                if ca == 0:
+                    continue
+                # 检测主高光（纯白）和副高光（淡蓝白）
+                if (cr >= 245 and cg >= 245 and cb >= 245) or \
+                   (cr >= 200 and cg >= 215 and cb >= 245 and cr <= 220 and cg <= 235):
+                    _eye_glow_points.append((x, y))
+        # 对每个高光点，在周围2px半径内添加光晕
+        for _gx, _gy in _eye_glow_points:
+            for _dy in range(-2, 3):
+                for _dx in range(-2, 3):
+                    if _dx == 0 and _dy == 0:
+                        continue  # 跳过高光点本身
+                    _nx, _ny = _gx + _dx, _gy + _dy
+                    if _nx < 0 or _nx >= W or _ny < 0 or _ny >= H:
+                        continue
+                    _dist_sq = _dx * _dx + _dy * _dy
+                    if _dist_sq > 4:  # 限制半径≤2px
+                        continue
+                    _nr, _ng, _nb, _na = canvas[_ny][_nx]
+                    if _na == 0:
+                        # 空白像素也添加光晕（眼神光的空气散射）
+                        _falloff = 1.0 - (_dist_sq / 5.0)
+                        _glow_a = int(_falloff * 40)  # 最大alpha=40，柔和散射
+                        if _glow_a > 3:
+                            canvas[_ny][_nx] = (200, 215, 240, _glow_a)
+                    else:
+                        # 已有像素：加法混合（additive blend）模拟光晕
+                        _falloff = 1.0 - (_dist_sq / 5.0)
+                        _add_r = int(_falloff * 25)   # 微暖白色光晕
+                        _add_g = int(_falloff * 28)
+                        _add_b = int(_falloff * 35)   # 偏冷蓝（眼神光的清透感）
+                        if _add_r > 1 or _add_g > 1 or _add_b > 1:
+                            canvas[_ny][_nx] = (
+                                min(255, _nr + _add_r),
+                                min(255, _ng + _add_g),
+                                min(255, _nb + _add_b),
+                                _na
+                            )
+
+        # ---- v0.3.46: 服装褶皱暗示线（Clothing Fold Implication）— 面料垂坠质感 ----
+        # 原理：真实服装在重力作用下，面料会沿身体曲面形成自然的垂坠褶皱。
+        #       在像素美术中，用1-2px的微暗竖线暗示褶皱走向，可以显著增加
+        #       服装的立体感和材质感，而无需增加复杂的着色。
+        #       参考Slynyrd像素美术教程中的"fabric folds"技法：
+        #       褶皱线应从肩部/胸部发出，向腰部收敛，呈"V"字形走向。
+        #       颜色比底色暗10-15个色阶，宽度1px，长度覆盖躯干中部。
+        # 实现：在躯干区域(body_top~body_bot)绘制3条微暗竖线：
+        #   - 中心线：从胸口到腰部，最淡（depth=-8）
+        #   - 左斜线：从左肩到腰中，稍强（depth=-12）
+        #   - 右斜线：从右肩到腰中，稍强（depth=-12）
+        #   线条颜色=底色暗化，根据y位置做线性渐变（上部深、下部浅→模拟褶皱从上落下）
+        _fold_body_top = body_top + max(1, body_draw_h // 6)   # 褶皱起点（略低于领口）
+        _fold_body_mid = body_top + body_draw_h // 2           # 褶皱中点（腰部）
+        _fold_body_bot = body_top + body_draw_h * 3 // 4       # 褶皱终点（不延伸到腿）
+        # 中心褶皱线
+        _fold_cx = cx
+        for y in range(max(0, _fold_body_top), min(H, _fold_body_bot)):
+            r, g, b, a = canvas[y][_fold_cx]
+            if a == 0:
+                continue
+            # 上部深、下部浅（褶皱从肩部垂下，越往下越舒展）
+            _fold_t = (y - _fold_body_top) / max(1, _fold_body_bot - _fold_body_top)
+            _darkness = int(8 * (1.0 - _fold_t * 0.6))  # 8→3的渐变暗度
+            if _darkness > 1:
+                canvas[y][_fold_cx] = (max(0, r - _darkness), max(0, g - _darkness), max(0, b - _darkness), a)
+        # 左斜褶皱线（从左肩到腰部中心偏左）
+        _fold_lx_start = cx - body_draw_w // 3
+        _fold_lx_end = cx - max(1, body_draw_w // 6)
+        for y in range(max(0, _fold_body_top), min(H, _fold_body_mid)):
+            r, g, b, a = canvas[y][_fold_cx]
+            if a == 0:
+                continue
+            _fold_t = (y - _fold_body_top) / max(1, _fold_body_mid - _fold_body_top)
+            _fx = int(_fold_lx_start + (_fold_lx_end - _fold_lx_start) * _fold_t)
+            if 0 <= _fx < W:
+                _fr, _fg, _fb, _fa = canvas[y][_fx]
+                if _fa == 0:
+                    continue
+                _darkness = int(12 * (1.0 - _fold_t * 0.5))  # 12→6渐变
+                if _darkness > 1:
+                    canvas[y][_fx] = (max(0, _fr - _darkness), max(0, _fg - _darkness), max(0, _fb - _darkness), _fa)
+        # 右斜褶皱线（从右肩到腰部中心偏右，与左线对称）
+        _fold_rx_start = cx + body_draw_w // 3
+        _fold_rx_end = cx + max(1, body_draw_w // 6)
+        for y in range(max(0, _fold_body_top), min(H, _fold_body_mid)):
+            r, g, b, a = canvas[y][_fold_cx]
+            if a == 0:
+                continue
+            _fold_t = (y - _fold_body_top) / max(1, _fold_body_mid - _fold_body_top)
+            _fx = int(_fold_rx_start + (_fold_rx_end - _fold_rx_start) * _fold_t)
+            if 0 <= _fx < W:
+                _fr, _fg, _fb, _fa = canvas[y][_fx]
+                if _fa == 0:
+                    continue
+                _darkness = int(12 * (1.0 - _fold_t * 0.5))  # 12→6渐变
+                if _darkness > 1:
+                    canvas[y][_fx] = (max(0, _fr - _darkness), max(0, _fg - _darkness), max(0, _fb - _darkness), _fa)
 
         # ---- v0.3.26: 关节缝隙阴影（Joint Crease AO）— 增强身体部件衔接处的深度感 ----
         # 在头部-颈部、肩部-手臂、腰部-腿部等身体部件衔接区域绘制深色缝隙线
