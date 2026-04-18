@@ -1658,9 +1658,11 @@ class CharacterEngine:
                                                         max(0, _bb - _hs_secondary + 3),
                                                         _ba)
         
-        # ---- v0.3.13: 绘制耳朵 ----
+        # ---- v0.3.36: 绘制耳朵（内耳细节：耳甲阴影+耳轮高光+耳垂） ----
         # 耳朵位于头部两侧中部，为肤色椭圆（2x3像素）
         # 被头发遮挡时不绘制（检查是否有头发像素）
+        # v0.3.36增强：添加耳甲腔阴影（中心深色凹陷）、耳轮高光（上边缘亮色）
+        # 和耳垂（底部圆润凸起），使耳朵从"贴面色块"升级为有立体感的器官
         ear_w = max(1, head_r // 4)
         ear_h = max(2, head_r // 2)
         ear_y = head_cy  # 耳朵位于头部垂直中心
@@ -1675,9 +1677,31 @@ class CharacterEngine:
                             <= ear_w * ear_w * ear_h * ear_h):
                         # 检查是否被头发遮挡
                         if 0 <= ey < H and 0 <= ex < W and canvas[ey][ex][3] == 0:
-                            # 耳朵外轮廓（略深肤色）
                             ear_edge = (abs(edx) >= ear_w // 2 or abs(edy) >= ear_h // 2)
-                            if ear_edge:
+                            # v0.3.36: 内耳细节判定
+                            _ear_center = (abs(edx) <= max(0, ear_w // 2 - 1) and 
+                                          abs(edy) <= max(0, ear_h // 2 - 1))
+                            _ear_upper_edge = (edy < 0 and ear_edge)
+                            _ear_lobe = (edy > 0 and abs(edy) >= ear_h // 2 - 1 and 
+                                        abs(edx) <= max(0, ear_w // 2 - 1))
+                            
+                            if _ear_center:
+                                # 耳甲腔阴影：中心偏暗偏红（模拟凹陷处的散射光）
+                                canvas[ey][ex] = (max(0, skin[0]-18), 
+                                                  max(0, skin[1]-20), 
+                                                  max(0, skin[2]-15), 255)
+                            elif _ear_upper_edge:
+                                # 耳轮高光：上边缘偏亮（受光面凸起反射）
+                                canvas[ey][ex] = (min(255, skin[0]+8), 
+                                                  min(255, skin[1]+6), 
+                                                  min(255, skin[2]+4), 255)
+                            elif _ear_lobe:
+                                # 耳垂：略偏暖的肤色（耳垂血供丰富，偏红润）
+                                canvas[ey][ex] = (min(255, skin[0]+5), 
+                                                  max(0, skin[1]-2), 
+                                                  max(0, skin[2]-5), 255)
+                            elif ear_edge:
+                                # 外轮廓（略深肤色）
                                 canvas[ey][ex] = (max(0, skin[0]-30), max(0, skin[1]-30), max(0, skin[2]-20), 255)
                             else:
                                 canvas[ey][ex] = (*skin, 255)
@@ -1881,33 +1905,57 @@ class CharacterEngine:
         if body_dx != 0:
             cx = _original_cx
         
-        # ---- 绘制腿（v0.3.20: 纵向渐变着色增加立体感，匹配身体渐变风格） ----
+        # ---- 绘制腿（v0.3.36: Bayer抖动渐变着色，匹配身体渲染品质） ----
+        # v0.3.20 原有3区硬切换(0.3/0.7阈值)替换为与身体相同的Bayer有序抖动渐变
+        # 让腿部与身体的渲染品质一致，消除明显的色带分界线
         leg_w = body_w // 3
-        # 左腿（带偏移 + 纵向渐变：顶部受光偏亮，底部阴影偏暗）
+        # Bayer 4x4 抖动矩阵（与身体渲染使用同一矩阵）
+        _leg_dither = [
+            [ 0,  8,  2, 10],
+            [12,  4, 14,  6],
+            [ 3, 11,  1,  9],
+            [15,  7, 13,  5],
+        ]
+        
+        def _leg_color_at(leg_t, local_y, local_x):
+            """根据纵向位置leg_t和像素坐标计算腿部颜色（Bayer抖动渐变）"""
+            dt = _leg_dither[local_y % 4][local_x % 4] / 16.0
+            if leg_t < 0.15:
+                return body_light
+            elif leg_t < 0.35:
+                # 高光→原色过渡带
+                blend = (leg_t - 0.15) / 0.20
+                return body_color if blend > dt else body_light
+            elif leg_t < 0.60:
+                return body_color
+            elif leg_t < 0.80:
+                # 原色→深色过渡带
+                blend = (leg_t - 0.60) / 0.20
+                return body_dark if blend > dt else body_color
+            else:
+                return body_dark
+        
+        # 左腿（带偏移 + Bayer抖动渐变：顶部受光偏亮，底部阴影偏暗）
         ldx, ldy = pose["left_leg_dx"], pose["left_leg_dy"]
+        _lleg_x0 = cx - body_w//2 + ldx
         for y in range(leg_top + ldy, min(H, leg_top + ldy + leg_h)):
             leg_t = (y - leg_top - ldy) / max(1, leg_h - 1)  # 0=顶 1=底
-            if leg_t < 0.3:
-                leg_c = body_light
-            elif leg_t > 0.7:
-                leg_c = body_dark
-            else:
-                leg_c = body_color
-            for x in range(max(0, cx - body_w//2 + ldx), min(W, cx - body_w//2 + ldx + leg_w)):
+            _ly = y - (leg_top + ldy)  # 腿部局部Y坐标
+            for x in range(max(0, _lleg_x0), min(W, _lleg_x0 + leg_w)):
                 if 0 <= y < H:
+                    _lx = x - _lleg_x0  # 腿部局部X坐标
+                    leg_c = _leg_color_at(leg_t, _ly, _lx)
                     canvas[y][x] = (*leg_c, 255)
-        # 右腿（带偏移 + 纵向渐变）
+        # 右腿（带偏移 + Bayer抖动渐变）
         rdx, rdy = pose["right_leg_dx"], pose["right_leg_dy"]
+        _rleg_x0 = cx + body_w//2 - leg_w + rdx
         for y in range(leg_top + rdy, min(H, leg_top + rdy + leg_h)):
             leg_t = (y - leg_top - rdy) / max(1, leg_h - 1)  # 0=顶 1=底
-            if leg_t < 0.3:
-                leg_c = body_light
-            elif leg_t > 0.7:
-                leg_c = body_dark
-            else:
-                leg_c = body_color
-            for x in range(max(0, cx + body_w//2 - leg_w + rdx), min(W, cx + body_w//2 + rdx)):
+            _ly = y - (leg_top + rdy)  # 腿部局部Y坐标
+            for x in range(max(0, _rleg_x0), min(W, _rleg_x0 + leg_w)):
                 if 0 <= y < H:
+                    _lx = x - _rleg_x0  # 腿部局部X坐标
+                    leg_c = _leg_color_at(leg_t, _ly, _lx)
                     canvas[y][x] = (*leg_c, 255)
         
         # ---- v0.3.27: 按类型鞋子渲染 — 独特鞋型+双层渐变着色 ----
