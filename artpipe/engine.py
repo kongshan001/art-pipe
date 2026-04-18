@@ -1,6 +1,7 @@
 """
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
+v0.3.49: 攻击武器挥动轨迹(Weapon Swing Trail,攻击挥出阶段3步渐隐残影模拟运动模糊)+行走/奔跑地面扬尘粒子(Walk/Run Dust Particles,脚着地帧地面灰尘颗粒增加运动重量感)
 v0.3.46: 选择性眼睛发光(Selective Eye Glow,眼睛高光2px半径bloom散射冷白光晕模拟Hollow Knight/Ori锐利眼神)+服装褶皱暗示线(Clothing Fold Implication,V形垂坠褶皱暗线从肩向腰收敛增强面料立体质感)
 纯Python实现，零外部依赖
 v0.3.40: Selout选择性描边(描边色与相邻表面色3:1混合,亮面附近描边微亮/暗面附近保持深色,3D弹出效果)+垂直色温梯度(顶部冷偏移模拟天空环境光R-5/B+5,底部暖偏移模拟地面反射光R+6/G+3/B-3,角色嵌入环境感)
@@ -3278,6 +3279,55 @@ class CharacterEngine:
                                 ga = int(falloff * 120)
                                 if ga > 8:  # 低于8的太淡，跳过
                                     canvas[gy2][gx2] = (gc[0], gc[1], gc[2], ga)
+            
+            # v0.3.49: 攻击武器挥动轨迹（Weapon Swing Trail）
+            # 在攻击动画的挥出阶段(t>0.4)，武器尖端后方绘制半透明弧线残影
+            # 原理：格斗游戏的经典技法"拖影"(afterimage)，用2-4个递减透明度的
+            #       历史武器尖端位置模拟运动模糊，让攻击的力度感和速度感倍增
+            if anim == "attack" and weapon in ("sword", "staff", "dagger", "bow"):
+                # 获取当前帧的 t 值
+                _trail_nframes = 6  # attack动画总帧数
+                _trail_t = frame_idx / max(1, _trail_nframes - 1)
+                # 只在挥出阶段(t>0.4)绘制轨迹
+                if _trail_t > 0.4:
+                    _trail_swing_raw = (_trail_t - 0.4) / 0.6  # 0→1
+                    _trail_swing = self._ease_out(_trail_swing_raw)
+                    _trail_retract = max(0, 1 - _trail_swing * 1.5)
+                    _trail_current_angle = (1 - _trail_retract) * 1.0
+                    # 画3个历史位置（角度从当前往回插值）
+                    _trail_steps = 3
+                    for _ti in range(1, _trail_steps + 1):
+                        # 历史角度：从当前角度向之前的角度回溯
+                        _trail_frac = _ti / (_trail_steps + 1)  # 0.25, 0.5, 0.75
+                        # 插值回更早的角度（更大=更早的挥出位置）
+                        _trail_hist_angle = _trail_current_angle + _trail_frac * 0.6
+                        _trail_hist_angle = min(1.0, _trail_hist_angle)
+                        # 计算历史武器尖端位置
+                        _trail_tip_dx = int(_trail_hist_angle * weapon_len * 0.4)
+                        _trail_tip_x = weapon_base_x + _trail_tip_dx
+                        _trail_tip_y = weapon_base_y + weapon_len
+                        # 透明度递减：最近的残影最亮，最远的最淡
+                        _trail_alpha = int(90 * (1 - _trail_frac))
+                        # 轨迹颜色：武器accent色的亮化版
+                        if weapon == "sword":
+                            _trail_color = (255, 240, 200)
+                        elif weapon == "dagger":
+                            _trail_color = (140, 230, 250)
+                        else:
+                            _trail_color = (min(255, accent[0] + 60), min(255, accent[1] + 60), min(255, accent[2] + 60))
+                        # 在历史尖端位置画2x2半透明像素
+                        for _ty in range(max(0, _trail_tip_y - 1), min(H, _trail_tip_y + 1)):
+                            for _tx in range(max(0, _trail_tip_x - 1), min(W, _trail_tip_x + 1)):
+                                if canvas[_ty][_tx][3] == 0:  # 只在空白区域画
+                                    canvas[_ty][_tx] = (_trail_color[0], _trail_color[1], _trail_color[2], _trail_alpha)
+                        # 沿轨迹弧线画1-2个中间点（连接当前尖端和历史尖端）
+                        if _ti == 1:
+                            _mid_dx = (_trail_tip_dx + tip_dx) // 2
+                            _mid_x = weapon_base_x + _mid_dx
+                            _mid_y = weapon_base_y + weapon_len
+                            _mid_alpha = int(60 * (1 - _trail_frac))
+                            if 0 <= _mid_y < H and 0 <= _mid_x < W and canvas[_mid_y][_mid_x][3] == 0:
+                                canvas[_mid_y][_mid_x] = (_trail_color[0], _trail_color[1], _trail_color[2], _mid_alpha)
         
         elif weapon == "book":
             for y in range(body_top + ps + rady, body_top + ps*5 + rady):
@@ -3324,6 +3374,37 @@ class CharacterEngine:
                     if dx_h*dx_h + dy_h*dy_h <= hole_r*hole_r:
                         if 0 <= y < H and 0 <= x < W:
                             canvas[y][x] = (100, 70, 40, 255)  # 暗色音孔
+        
+        # v0.3.49: 行走/奔跑地面扬尘粒子（Walk/Run Dust Particles）
+        # 在walk/run动画中，脚底附近绘制微小的灰尘/沙尘颗粒
+        # 原理：2D平台游戏的经典细节，角色移动时地面扬起灰尘让运动有"重量感"
+        #       dust只在脚落地帧(踏地相位)出现，模拟脚掌撞击地面的效果
+        if anim in ("walk", "run") and weapon != "none":
+            # 脚底Y坐标：鞋底位置（leg_top + leg_h + shoe_h）
+            _dust_ground_y = leg_top + leg_h + shoe_h
+            if _dust_ground_y < H:
+                # 脚落地相位检测：walk时每隔半周期有踏地帧
+                _dust_t = frame_idx / max(1, 5)  # walk/run都是6帧
+                _dust_phase = _dust_t * math.pi * 2
+                # 踏地强度：sin波在接近0或π时代表脚着地
+                _dust_impact = abs(math.sin(_dust_phase))
+                # run时扬尘更多
+                _dust_count = 4 if anim == "run" else 2
+                _dust_alpha_base = 70 if anim == "run" else 45
+                if _dust_impact > 0.3:  # 只在脚着地时产生扬尘
+                    # 用帧索引作为伪随机种子，确保帧间一致
+                    _dust_seed = frame_idx * 7 + 13
+                    for _di in range(_dust_count):
+                        # 扬尘X偏移：以角色中心为基准，向两侧散开
+                        _dust_px = cx + ((_dust_seed + _di * 11) % 9) - 4  # -4到+4范围
+                        # 扬尘Y偏移：地面向上1-2像素
+                        _dust_py = _dust_ground_y - ((_dust_seed + _di * 3) % 2)
+                        # 透明度：随粒子索引递减，加上踏地强度影响
+                        _dust_alpha = int(_dust_alpha_base * (1 - _di * 0.25) * min(1.0, _dust_impact))
+                        if 0 <= _dust_py < H and 0 <= _dust_px < W and _dust_alpha > 10:
+                            if canvas[_dust_py][_dust_px][3] == 0:  # 不覆盖已有像素
+                                # 灰尘色：暖灰色（偏土黄）
+                                canvas[_dust_py][_dust_px] = (180, 165, 140, _dust_alpha)
         
         # ---- 描边（v0.3.29: 深度加权描边 — 底部粗顶部细，增强空间层次感） ----
         # 原理：像素美术最佳实践中，角色底部（脚/腿）比顶部（头/发）更靠近地面，
