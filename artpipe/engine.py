@@ -1430,8 +1430,27 @@ class CharacterEngine:
                         lid_color = (max(0, skin[0]-35), max(0, skin[1]-25), max(0, skin[2]-20), 255)
                         canvas[y][x] = lid_color
                     elif eye_zone_y and eye_zone_x:
-                        # 虹膜
-                        iris_color = (min(255, accent[0]+30), min(255, accent[1]+30), min(255, accent[2]+30))
+                        # v0.3.58: 虹膜径向渐变(Iris Radial Gradient)
+                        # 原理：真实虹膜呈环形结构——外缘暗（与巩膜接界的limbal ring）、
+                        #       中间亮环（虹膜纤维反光层）、内缘暗（瞳孔边缘虹膜收缩纹理）。
+                        #       像素美术中，用2-3个明度级别的径向渐变即可暗示这个3D球面结构。
+                        #       这比flat纯色虹膜更有"玻璃球"质感，眼睛看起来有深度而非贴纸。
+                        # 实现：根据dx在eye_zone中的归一化位置确定3级渐变
+                        #       外缘(head_r//2附近)=暗边-15，中间=亮环+30，内缘(head_r//3附近)=中暗-8
+                        _iris_inner = head_r // 3
+                        _iris_outer = head_r // 2
+                        _iris_range = max(1, _iris_outer - _iris_inner)
+                        _iris_t = (abs(dx) - _iris_inner) / _iris_range  # 0=内缘, 1=外缘
+                        _iris_base = accent
+                        if _iris_t < 0.35:
+                            # 内缘区（靠近鼻子侧）—— 中暗，模拟瞳孔边缘虹膜收缩
+                            iris_color = (max(0, _iris_base[0] - 8), max(0, _iris_base[1] - 8), max(0, _iris_base[2] - 8))
+                        elif _iris_t < 0.7:
+                            # 中间亮环 —— 最亮的虹膜色，模拟纤维反光
+                            iris_color = (min(255, _iris_base[0] + 30), min(255, _iris_base[1] + 30), min(255, _iris_base[2] + 30))
+                        else:
+                            # 外缘暗边（limbal ring）—— 虹膜与巩膜接界的暗环
+                            iris_color = (max(0, _iris_base[0] - 15), max(0, _iris_base[1] - 15), max(0, _iris_base[2] - 15))
                         canvas[y][x] = (*iris_color, 255)
                         # 瞳孔（受惊时不画瞳孔=大虹膜=惊恐效果）
                         if anim != "hurt":
@@ -1806,8 +1825,25 @@ class CharacterEngine:
                     _hny = _hdy * _hinv_r
                     # 光源方向(归一化)：与头部球面着色一致
                     _hdot = _hnx * _lx + _hny * _ly
-                    # 亮度偏移：±12（比头部的±16略弱，头发纹理更柔和）
-                    _hbright = int(_hdot * 12)
+                    # v0.3.58: 色带量化(Banded Quantization) — 将连续渐变分4级离散色带
+                    # 原理：像素美术经典技法"banding"——将连续光照量化为3-4个明度级别，
+                    #       形成清晰的亮/中间亮/中间暗/暗四个色带，比平滑渐变更有像素感。
+                    #       这是最专业像素美术工作流的标准操作：先用连续渐变定光照方向，
+                    #       再量化为离散色阶保持每个色带纯净一致。
+                    #       参考：slynyrd(2024)像素教程"Posterize your gradients for cleaner pixel art"
+                    #       量化后每个色带内的像素颜色完全一致，消除亚像素色彩噪声，
+                    #       同时在色带边界形成锐利过渡——这是像素艺术的核心美学特征。
+                    # 实现：将_hdot∈[-1,1]映射到4级量化值：-10/-3/+4/+12
+                    #       低2级偏暗（阴影和过渡），高2级偏亮（中间调和高光）
+                    _hband = _hdot * 2 + 2  # 映射到[0, 4]
+                    if _hband < 1.0:
+                        _hbright = -10  # 深阴影带（背光侧）
+                    elif _hband < 2.0:
+                        _hbright = -3   # 过渡暗带
+                    elif _hband < 3.0:
+                        _hbright = 4    # 过渡亮带
+                    else:
+                        _hbright = 12   # 高光带（受光侧）
                     canvas[y][x] = (
                         min(255, max(0, int(_hp[0]) + _hbright)),
                         min(255, max(0, int(_hp[1]) + _hbright)),
