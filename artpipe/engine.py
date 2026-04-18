@@ -1,6 +1,7 @@
 """
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
+v0.3.52: 多颜色解析(Multi-Color Parsing,提示词中检测多个颜色自动分配主色和强调色)+施法魔法阵(Cast Magic Circle,施法时脚底旋转发光法阵使用强调色增强仪式感)
 v0.3.49: 攻击武器挥动轨迹(Weapon Swing Trail,攻击挥出阶段3步渐隐残影模拟运动模糊)+行走/奔跑地面扬尘粒子(Walk/Run Dust Particles,脚着地帧地面灰尘颗粒增加运动重量感)
 v0.3.46: 选择性眼睛发光(Selective Eye Glow,眼睛高光2px半径bloom散射冷白光晕模拟Hollow Knight/Ori锐利眼神)+服装褶皱暗示线(Clothing Fold Implication,V形垂坠褶皱暗线从肩向腰收敛增强面料立体质感)
 纯Python实现，零外部依赖
@@ -268,8 +269,9 @@ class CharacterEngine:
         if best_score > 0:
             char_type = best_type
 
-        # 检测颜色
+        # 检测颜色（v0.3.52: 支持多颜色解析，如"红蓝骑士"同时检测红+蓝）
         color = None
+        color2 = None  # v0.3.52: 第二颜色用于accent色
         color_map = {
             "red": (220, 60, 60), "红": (220, 60, 60),
             "blue": (60, 100, 220), "蓝": (60, 100, 220),
@@ -281,12 +283,24 @@ class CharacterEngine:
             "gold": (220, 180, 50), "金": (220, 180, 50),
             "silver": (190, 195, 200), "银": (190, 195, 200),
         }
+        # v0.3.52: 收集所有匹配颜色（保留出现顺序）
+        _matched_colors = []
+        _matched_positions = []  # 记录关键词在prompt中的位置，用于确定先后顺序
         for kw, rgb in color_map.items():
-            if kw in prompt_lower:
-                color = rgb
-                break
+            pos = prompt_lower.find(kw)
+            if pos >= 0:
+                # 避免重复颜色（中文和英文可能匹配同一个色）
+                if rgb not in _matched_colors:
+                    _matched_colors.append(rgb)
+                    _matched_positions.append(pos)
+        # 按在prompt中出现位置排序（先出现的为主色）
+        if _matched_colors:
+            _sorted = sorted(zip(_matched_positions, _matched_colors))
+            color = _sorted[0][1]   # 主色：最先出现的颜色
+            if len(_sorted) > 1:
+                color2 = _sorted[1][1]  # 副色：第二个出现的颜色
 
-        return {"style": style, "char_type": char_type, "color": color}
+        return {"style": style, "char_type": char_type, "color": color, "color2": color2}
 
     def generate(self, prompt, style=None, char_type=None, seed=None,
                  render_mode="procedural", ai_backend="pollinations",
@@ -315,6 +329,9 @@ class CharacterEngine:
         base_palette = list(PALETTES[style_cfg["palette_type"]])
         if parsed["color"]:
             base_palette[0] = parsed["color"]
+        # v0.3.52: 多颜色解析 — 第二颜色替换accent色(base_palette[1])
+        if parsed.get("color2"):
+            base_palette[1] = parsed["color2"]
         # Fisher-Yates 洗牌保持随机性
         for i in range(len(base_palette) - 1, 0, -1):
             j = rng.int_range(0, i)
@@ -4193,6 +4210,71 @@ class CharacterEngine:
                     min(255, _bp[2] + _bounce_b),
                     _bp[3]
                 )
+
+        # ---- v0.3.52: 施法魔法阵（Cast Magic Circle）— 脚底发光法阵增强施法仪式感 ----
+        # 原理：经典 RPG 中施法角色脚下出现魔法阵是标志性视觉符号。
+        #       用 accent color 绘制两层：外环（旋转符文感）+ 内部渐变光晕。
+        #       强度跟随施法时间线：蓄力渐亮 → 释放峰值 → 恢复渐消。
+        if anim == "cast":
+            _cast_magic_t = frame_idx / max(1, 7 - 1)  # cast 动画固定 7 帧
+            # 计算魔法阵强度：蓄力渐强，释放峰值，恢复渐弱
+            if _cast_magic_t < 0.29:
+                _circle_alpha = int((_cast_magic_t / 0.29) * 80)  # 0→80 蓄力渐亮
+            elif _cast_magic_t < 0.43:
+                _circle_alpha = 80 + int(((_cast_magic_t - 0.29) / 0.14) * 60)  # 80→140 高位蓄力
+            elif _cast_magic_t < 0.57:
+                _circle_alpha = 180  # 释放峰值
+            else:
+                _circle_alpha = max(0, int(180 * (1.0 - (_cast_magic_t - 0.57) / 0.43)))  # 180→0 渐消
+
+            if _circle_alpha > 3:
+                _circle_cx = cx  # 阵中心 X
+                _circle_cy = leg_top + leg_h + body_dy + 2  # 阵中心 Y（脚底略下方）
+                _circle_rx = int(body_draw_w * 1.8)  # 水平半径（比身体宽）
+                _circle_ry = max(3, int(leg_h * 0.45))  # 垂直半径（透视压缩）
+                # accent color 作为魔法阵色
+                _mc_r, _mc_g, _mc_b = accent if len(palette) > 2 else (100, 150, 255)
+
+                # 绘制外环（虚线旋转感 — 用 sin/cos 角度调制透明度模拟符文间断）
+                _ring_inner_rx = int(_circle_rx * 0.75)
+                _ring_inner_ry = max(2, int(_circle_ry * 0.75))
+                _ring_outer_rx = _circle_rx
+                _ring_outer_ry = _circle_ry
+                for y in range(max(0, _circle_cy - _ring_outer_ry - 1), min(H, _circle_cy + _ring_outer_ry + 2)):
+                    for x in range(max(0, _circle_cx - _ring_outer_rx - 1), min(W, _circle_cx + _ring_outer_rx + 2)):
+                        dx_n = (x - _circle_cx) / max(1, _ring_outer_rx)
+                        dy_n = (y - _circle_cy) / max(1, _ring_outer_ry)
+                        dist_sq = dx_n * dx_n + dy_n * dy_n
+                        # 角度用于旋转调制
+                        _angle = math.atan2(dy_n, dx_n)
+                        # 旋转感：角度偏移随帧变化（frame_idx 驱动旋转）
+                        _rot_offset = frame_idx * 0.5
+                        _rotated_angle = _angle + _rot_offset
+                        # 符文间断：8 个方向上用 sin 调制，模拟符文刻痕
+                        _rune_mod = 0.5 + 0.5 * math.sin(_rotated_angle * 4)  # 4 次对称符文
+                        if 0.55 <= dist_sq <= 0.85:
+                            # 外环区域
+                            _ring_dist = abs(dist_sq - 0.7) / 0.15  # 0 在中心环，1 在边缘
+                            _ring_falloff = max(0, 1.0 - _ring_dist)
+                            _pixel_a = int(_circle_alpha * 0.7 * _ring_falloff * _rune_mod)
+                            if _pixel_a > 2 and canvas[y][x][3] == 0:
+                                canvas[y][x] = (
+                                    min(255, _mc_r + int((255 - _mc_r) * 0.4)),
+                                    min(255, _mc_g + int((255 - _mc_g) * 0.4)),
+                                    min(255, _mc_b + int((255 - _mc_b) * 0.4)),
+                                    _pixel_a
+                                )
+                        elif dist_sq < 0.5:
+                            # 内部光晕：柔和渐变
+                            _inner_falloff = 1.0 - dist_sq / 0.5
+                            _pixel_a = int(_circle_alpha * 0.25 * _inner_falloff)
+                            if _pixel_a > 2 and canvas[y][x][3] == 0:
+                                canvas[y][x] = (
+                                    min(255, _mc_r + int((255 - _mc_r) * 0.3)),
+                                    min(255, _mc_g + int((255 - _mc_g) * 0.3)),
+                                    min(255, _mc_b + int((255 - _mc_b) * 0.3)),
+                                    _pixel_a
+                                )
 
         # ---- v0.3.13: 地面阴影投射 — 椭圆形渐变阴影增强空间感 ----
         # 在角色脚底位置绘制一个椭圆形半透明阴影，模拟地面投影
