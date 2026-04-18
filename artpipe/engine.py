@@ -1,7 +1,7 @@
 """
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
-v0.3.52: 多颜色解析(Multi-Color Parsing,提示词中检测多个颜色自动分配主色和强调色)+施法魔法阵(Cast Magic Circle,施法时脚底旋转发光法阵使用强调色增强仪式感)
+v0.3.53: 攻击武器动态发光(Attack Weapon Glow,蓄力微光→挥出峰值→收招渐熄三阶段)+防御武器微光(Defend Glow,格挡时武器微微闪光)+受击冲击粒子(Hurt Impact Sparks,受击时6颗accent色火花从身体中心向外扩散渐淡)
 v0.3.49: 攻击武器挥动轨迹(Weapon Swing Trail,攻击挥出阶段3步渐隐残影模拟运动模糊)+行走/奔跑地面扬尘粒子(Walk/Run Dust Particles,脚着地帧地面灰尘颗粒增加运动重量感)
 v0.3.46: 选择性眼睛发光(Selective Eye Glow,眼睛高光2px半径bloom散射冷白光晕模拟Hollow Knight/Ori锐利眼神)+服装褶皱暗示线(Clothing Fold Implication,V形垂坠褶皱暗线从肩向腰收敛增强面料立体质感)
 纯Python实现，零外部依赖
@@ -3328,6 +3328,28 @@ class CharacterEngine:
                     glow_intensity = 1.0  # 释放峰值
                 else:
                     glow_intensity = 1.0 * (1 - (cast_t - 0.57) / 0.43)  # 1.0→0
+            elif anim == "attack":
+                # v0.3.53: 攻击武器发光 — 蓄力微光→挥出峰值→收招渐熄
+                # 原理：格斗游戏中武器挥击的发光变化是打击感(satisfakti)的核心要素，
+                #       蓄力阶段微光暗示"能量聚集"，挥出峰值产生视觉冲击，
+                #       收招阶段渐熄给出节奏感。与施法不同，攻击发光用暖白色调
+                #       模拟金属摩擦/空气灼热的物理质感。
+                _atk_nframes = 6
+                _atk_t = frame_idx / max(1, _atk_nframes - 1)
+                if _atk_t < 0.33:
+                    # 蓄力阶段：微弱发光暗示能量聚集
+                    glow_intensity = 0.15 + 0.35 * (_atk_t / 0.33)  # 0.15→0.50
+                elif _atk_t < 0.60:
+                    # 挥出峰值：武器最快速度通过空气，发光最强
+                    glow_intensity = 0.50 + 0.40 * ((_atk_t - 0.33) / 0.27)  # 0.50→0.90
+                else:
+                    # 收招渐熄：能量消散
+                    glow_intensity = 0.90 * (1.0 - (_atk_t - 0.60) / 0.40)  # 0.90→0
+            elif anim == "defend":
+                # v0.3.53: 防御微弱发光 — 格挡成功时武器微微闪光
+                _def_nframes = 5
+                _def_t = frame_idx / max(1, _def_nframes - 1)
+                glow_intensity = 0.15 if _def_t < 0.3 else 0.08  # 准备阶段稍亮，稳守阶段微光
             
             if glow_intensity > 0.05 and weapon in ("staff", "sword", "dagger", "bow"):
                 # 发光中心点
@@ -3490,6 +3512,41 @@ class CharacterEngine:
                             if canvas[_dust_py][_dust_px][3] == 0:  # 不覆盖已有像素
                                 # 灰尘色：暖灰色（偏土黄）
                                 canvas[_dust_py][_dust_px] = (180, 165, 140, _dust_alpha)
+        
+        # v0.3.53: 受击冲击粒子（Hurt Impact Sparks）— 受击时飞溅的小火花/碎片粒子
+        # 原理：格斗游戏和动作游戏的经典反馈特效，角色被击中时从受击点飞出
+        #       小型发光粒子（火花/碎片），提供即时的视觉冲击反馈。
+        #       命中火花(hit spark)是游戏打击感(juice)的核心元素之一，
+        #       它让攻击的"命中瞬间"变得可感知——玩家通过火花就知道"打中了"。
+        #       粒子从身体中心向外扩散，首帧最亮最大，后续帧渐淡渐小。
+        #       颜色使用accent色变亮变暖，模拟受击瞬间的能量释放/灼热点。
+        if anim == "hurt":
+            _hurt_nframes = 3  # hurt动画固定3帧
+            _hurt_t = frame_idx / max(1, _hurt_nframes - 1)  # 0→1
+            _spark_fade = max(0.0, 1.0 - _hurt_t * 1.2)  # 首帧1.0，最后帧~0
+            if _spark_fade > 0.1:
+                # 冲击粒子中心：身体中心位置
+                _spark_cx = cx + body_dx  # 跟随身体偏移
+                _spark_cy = body_top + body_h // 2
+                # 粒子数量：首帧6颗，逐帧减少
+                _spark_count = max(1, int(6 * _spark_fade))
+                # 粒子颜色：accent色变亮+暖色偏移（模拟能量释放）
+                _spark_r = min(255, accent[0] + 80)
+                _spark_g = min(255, accent[1] + 60)
+                _spark_b = min(255, accent[2] + 30)
+                for _si in range(_spark_count):
+                    # 粒子方向：从中心向外扩散（8方向均匀分布）
+                    _spark_angle = _si * (360.0 / 6) + 30  # 30°起始偏移避免正交对称
+                    _spark_rad = math.radians(_spark_angle)
+                    # 粒子距离：随帧增加向外飞散
+                    _spark_dist = int((2 + _hurt_t * 4) * (0.8 + _si * 0.15))
+                    _spark_px = int(_spark_cx + math.cos(_spark_rad) * _spark_dist)
+                    _spark_py = int(_spark_cy + math.sin(_spark_rad) * _spark_dist)
+                    # 粒子alpha：随fade和距离递减
+                    _spark_alpha = int(200 * _spark_fade * max(0.3, 1.0 - _si * 0.12))
+                    if 0 <= _spark_py < H and 0 <= _spark_px < W and _spark_alpha > 15:
+                        if canvas[_spark_py][_spark_px][3] == 0:  # 不覆盖角色像素
+                            canvas[_spark_py][_spark_px] = (_spark_r, _spark_g, _spark_b, _spark_alpha)
         
         # ---- 描边（v0.3.29: 深度加权描边 — 底部粗顶部细，增强空间层次感） ----
         # 原理：像素美术最佳实践中，角色底部（脚/腿）比顶部（头/发）更靠近地面，
