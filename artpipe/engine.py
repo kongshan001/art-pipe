@@ -2278,6 +2278,97 @@ class CharacterEngine:
                         a
                     )
         
+        # ---- v0.3.56a: 肩线暗带 (Shoulder Line Shadow) — 肩部横向阴影增强上体立体感 ----
+        # 原理：真实人体中，锁骨下方/三角肌前方存在一条自然的阴影过渡带，
+        #       由肩部凸起到胸部平坦的几何转折造成。在像素美术中，在肩部区域
+        #       添加一条柔和的横向暗带（约身体宽度70%），可以：
+        #       (1)暗示肩胛骨和三角肌的存在，让上半身不再是一个平面色块
+        #       (2)与v0.3.29的服装高光带形成上下对比：肩线暗→胸部高光→腰部暗，
+        #         建立起纵向上"暗-亮-暗"的节奏感
+        #       (3)让角色看起来"有肩膀"而非"圆柱体上画了衣服"
+        # 实现：在身体顶部8%-18%区域（肩线位置），画一条横向暗带，
+        #       颜色比body_color深15-22单位，宽度约为身体渲染宽度的70%。
+        #       暗带上下缘使用Bayer抖动过渡（与整体着色风格一致），避免硬边。
+        #       左侧受光面稍浅（+5补偿），右侧稍深，保持光照方向一致性。
+        _shoulder_band_y0 = body_top + int(body_draw_h * 0.08)
+        _shoulder_band_y1 = body_top + int(body_draw_h * 0.18)
+        _shoulder_band_hw = int(_contour_hw * 0.70)  # 肩线宽度=身体的70%
+        if _shoulder_band_hw >= 2:
+            _sb_dither = [
+                [ 0,  8,  2, 10],
+                [12,  4, 14,  6],
+                [ 3, 11,  1,  9],
+                [15,  7, 13,  5],
+            ]
+            for _sby in range(max(0, _shoulder_band_y0), min(H, _shoulder_band_y1 + 1)):
+                _sb_local_y = _sby - body_top
+                for _sbx in range(max(0, cx - _shoulder_band_hw), min(W, cx + _shoulder_band_hw)):
+                    _sb_px = canvas[_sby][_sbx]
+                    if _sb_px[3] == 0:
+                        continue
+                    # 横向衰减：中心暗、边缘正常（避免叠加到已有边缘暗化上）
+                    _sb_hdist = abs(_sbx - cx) / max(1, _shoulder_band_hw)
+                    if _sb_hdist > 0.85:
+                        continue  # 太靠边缘，跳过
+                    # 纵向衰减：带中心最深，上下渐淡（Bayer抖动平滑过渡）
+                    _sb_vert_center = (_shoulder_band_y0 + _shoulder_band_y1) / 2.0
+                    _sb_vdist = abs(_sby - _sb_vert_center) / max(1, (_shoulder_band_y1 - _shoulder_band_y0) / 2.0)
+                    _sb_dt = _sb_dither[_sb_local_y % 4][_sbx % 4] / 16.0
+                    if _sb_vdist > _sb_dt:
+                        continue  # Bayer抖动过滤
+                    # 基础暗化量：中心15，边缘渐减
+                    _sb_darken = int(18 * (1.0 - _sb_hdist * 0.6))
+                    # 光照一致性：左侧受光面稍浅
+                    if _sbx < cx:
+                        _sb_darken = max(5, _sb_darken - 5)
+                    _r, _g, _b, _a = _sb_px
+                    canvas[_sby][_sbx] = (
+                        max(0, _r - _sb_darken),
+                        max(0, _g - _sb_darken),
+                        max(0, _b - _sb_darken + 2),  # 微偏蓝→阴影冷色调
+                        _a
+                    )
+        
+        # ---- v0.3.56b: 腰带细节 (Belt Detail) — 腰部分色带+带扣高光增强装备层次 ----
+        # 原理：在RPG/冒险类像素角色中，腰带(belt)是核心视觉元素之一：
+        #       (1) 它标记了上体（胸/腹）和下体（腿/裙）的分界线
+        #       (2) 带扣(buckle)是一个视觉锚点，常作为角色的标志性装饰
+        #       (3) 腰带的存在让"穿衣服"的感觉从"涂了颜色"升级为"有装备"
+        #       没有→有的区别类似于"一个色块"vs"一个角色"。
+        # 实现：在身体50%-55%位置（腰部区域），画一条2px高的暗色横带，
+        #       颜色比body_color深25-30单位，宽度等于身体渲染宽度。
+        #       在正中央(cx)添加1-2px的accent_light色亮块作为带扣高光。
+        #       左侧受光面的腰带稍浅（+4），保持光照一致性。
+        _belt_y0 = body_top + int(body_draw_h * 0.50)
+        _belt_y1 = body_top + int(body_draw_h * 0.55)
+        _belt_hw = max(2, _contour_hw)
+        if _belt_y1 > _belt_y0:
+            for _bly in range(max(0, _belt_y0), min(H, _belt_y1 + 1)):
+                for _blx in range(max(0, cx - _belt_hw), min(W, cx + _belt_hw)):
+                    _bl_px = canvas[_bly][_blx]
+                    if _bl_px[3] == 0:
+                        continue
+                    # 基础腰带色：比body_color深28
+                    _bl_darken = 28
+                    # 光照补偿：左侧受光面稍浅
+                    if _blx < cx - 1:
+                        _bl_darken = 24
+                    _r, _g, _b, _a = _bl_px
+                    canvas[_bly][_blx] = (
+                        max(0, _r - _bl_darken),
+                        max(0, _g - _bl_darken),
+                        max(0, _b - _bl_darken + 3),  # 微偏蓝→皮革冷色调
+                        _a
+                    )
+            # 带扣高光：腰带中央1-2px的accent_light色亮块
+            _buckle_y = (_belt_y0 + _belt_y1) // 2
+            _buckle_w = max(1, ps)
+            for _bkx in range(max(0, cx - _buckle_w), min(W, cx + _buckle_w + 1)):
+                for _bky in range(max(0, _buckle_y - 1), min(H, _buckle_y + 1)):
+                    if canvas[_bky][_bkx][3] > 0:
+                        # 带扣用accent_light色（金属光泽感）
+                        canvas[_bky][_bkx] = (*accent_light, 255)
+        
         # v0.3.27: 恢复原始cx — 腿部使用无偏移的中心保持地面锚定
         # （腿已经有自己的ldx/rdx偏移，不需要body_dx影响）
         if body_dx != 0:
