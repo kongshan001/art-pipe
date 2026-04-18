@@ -432,19 +432,45 @@ class CharacterEngine:
             }
         
         # SpriteSheet PNG
+        # v0.3.67: 按行动画布局(Per-Animation Row Layout)
+        # 原理：每个动画占据精灵表的独立行，cols=最大帧数。
+        #       游戏引擎可直接按行裁剪动画帧，无需复杂偏移计算。
+        #       例如：idle在第0行(4帧)、walk在第1行(6帧)...
+        #       比旧版固定8列布局更友好：Unity/Godot的动画导入器
+        #       通常按行切割spritesheet，按行布局让导入零配置。
         all_frames = []
         frame_map = {}
-        # v0.3.33: 从animations结果提取帧时长用于frame_map
         anim_durations = {name: info["frame_durations_ms"] for name, info in result["animations"].items()}
-        for anim_name, frames in animations.items():
-            frame_map[anim_name] = {
-                "start": len(all_frames),
-                "count": len(frames),
-                "frame_durations_ms": anim_durations.get(anim_name, []),  # v0.3.33
-            }
-            all_frames.extend(frames)
         
-        cols = 8
+        # 计算每行最大列数 = 所有动画中最大帧数
+        max_frames_per_anim = max(len(frames) for frames in animations.values())
+        cols = max_frames_per_anim  # 每行动画最多cols帧，短动画右侧留空
+        
+        frame_idx = 0
+        for anim_name, frames in animations.items():
+            # 每个动画占一整行，start对齐到行首
+            row_start = frame_idx
+            # 对齐到行首（确保start是cols的整数倍）
+            row_start = (frame_idx // cols) * cols
+            if frame_idx % cols != 0:
+                row_start += cols  # 跳到下一行
+            frame_idx = row_start
+            frame_map[anim_name] = {
+                "start": frame_idx,
+                "count": len(frames),
+                "frame_durations_ms": anim_durations.get(anim_name, []),
+                "row": frame_idx // cols,  # v0.3.67: 动画所在行号
+            }
+            # 填充行首空白（对齐用）
+            while len(all_frames) < frame_idx:
+                all_frames.append([[(0,0,0,0)] * self.CANVAS_W for _ in range(self.CANVAS_H)])
+            all_frames.extend(frames)
+            frame_idx += len(frames)
+        
+        # 补齐最后一行空白帧
+        while len(all_frames) % cols != 0:
+            all_frames.append([[(0,0,0,0)] * self.CANVAS_W for _ in range(self.CANVAS_H)])
+        
         # v0.3.10: 传入frame_map用于PNG tEXt元数据嵌入
         # v0.3.17: padding=1 帧间1px透明间距，防止游戏引擎纹理渗透
         spritesheet_png = create_spritesheet(all_frames, cols, self.CANVAS_W, self.CANVAS_H,
@@ -459,7 +485,67 @@ class CharacterEngine:
             "frame_height": self.CANVAS_H,
             "padding": 1,
             "frame_map": frame_map,
+            "layout": "per_animation_row",  # v0.3.67: 标记布局类型
         }
+        
+        # v0.3.67: 调色板渐变元数据导出(Palette Ramp Metadata Export)
+        # 为每种调色板颜色生成亮/中/暗三级色阶，支持游戏引擎运行时调色板替换。
+        # 原理：基于HSV色相旋转技术，与渲染引擎的_warm_shift/_cool_shift一致。
+        #       highlight(高光)：色相偏暖+提亮，用于受光面
+        #       mid(中间调)：原色，用于主色调
+        #       shadow(阴影)：色相偏冷+降亮，用于背光面
+        #       deep_shadow(深影)：进一步偏冷降亮，用于最深阴影
+        # 游戏引擎可用此数据实现"换皮"功能：替换角色主色时，
+        # 自动生成配套的高光和阴影色，保持画面色彩和谐。
+        def _hsv_shift(color, hue_target, amount, bright_delta):
+            """通用HSV色相偏移辅助函数"""
+            r, g, b = color
+            rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
+            mx, mn = max(rf, gf, bf), min(rf, gf, bf)
+            diff = mx - mn
+            if diff == 0:
+                h = 0
+            elif mx == rf:
+                h = (60 * ((gf - bf) / diff) + 360) % 360
+            elif mx == gf:
+                h = (60 * ((bf - rf) / diff) + 120) % 360
+            else:
+                h = (60 * ((rf - gf) / diff) + 240) % 360
+            s = 0 if mx == 0 else diff / mx
+            v = mx
+            # 色相旋转
+            hue_diff = ((hue_target - h + 180) % 360) - 180
+            h = (h + hue_diff * (amount / 80.0)) % 360
+            v = max(0.0, min(1.0, v + bright_delta))
+            # HSV → RGB
+            c = v * s
+            x = c * (1 - abs((h / 60) % 2 - 1))
+            m = v - c
+            h6 = h % 360
+            if h6 < 60:   rr, gg, bb = c, x, 0
+            elif h6 < 120: rr, gg, bb = x, c, 0
+            elif h6 < 180: rr, gg, bb = 0, c, x
+            elif h6 < 240: rr, gg, bb = 0, x, c
+            elif h6 < 300: rr, gg, bb = x, 0, c
+            else:          rr, gg, bb = c, 0, x
+            return [min(255, max(0, int((rr + m) * 255))),
+                    min(255, max(0, int((gg + m) * 255))),
+                    min(255, max(0, int((bb + m) * 255)))]
+        
+        palette_ramp = []
+        ramp_labels = ["skin", "body", "accent", "hair", "extra1", "extra2"]
+        for i, base_color in enumerate(base_palette):
+            base_list = list(base_color)
+            ramp = {
+                "role": ramp_labels[i] if i < len(ramp_labels) else f"color_{i}",
+                "base": base_list,
+                "highlight": _hsv_shift(base_list, 60, 20, 0.12),    # 暖偏移+提亮
+                "mid": base_list,                                       # 原色
+                "shadow": _hsv_shift(base_list, 240, 20, -0.12),      # 冷偏移+降亮
+                "deep_shadow": _hsv_shift(base_list, 240, 35, -0.25), # 强冷偏移+强降亮
+            }
+            palette_ramp.append(ramp)
+        result["palette_ramp"] = palette_ramp
         
         return result
     
