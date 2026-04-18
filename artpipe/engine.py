@@ -912,6 +912,24 @@ class CharacterEngine:
                         flash_intensity = int(50 * (1 - (t - 0.57) / 0.43))
                     if flash_intensity > 0:
                         frame = self._apply_flash(frame, flash_intensity)
+                # v0.3.68: 攻击冲击闪光（Attack Impact Flash）
+                # 原理：格斗游戏/动作游戏经典技法——攻击命中瞬间（t=0.4~0.6挥出阶段）
+                #       角色全身短暂变亮，模拟冲击能量释放。Street Fighter/Hollow Knight等
+                #       游戏使用1帧全白闪(flash)加强打击感。像素级别不需要那么极端，
+                #       微妙亮度提升(20-35)即可在视觉上传达"命中"的瞬间感。
+                #       冲击点(t≈0.5)闪光最强35，向两侧快速衰减。
+                if anim_name == "attack":
+                    if 0.4 <= t <= 0.7:
+                        # 冲击期间：t=0.4开始，t=0.5峰值，t=0.7消散
+                        _atk_t = (t - 0.4) / 0.3  # 0→1
+                        if _atk_t < 0.33:
+                            _atk_flash = int(_atk_t / 0.33 * 35)  # 蓄力渐强→35
+                        elif _atk_t < 0.5:
+                            _atk_flash = 35  # 冲击峰值
+                        else:
+                            _atk_flash = int(35 * (1 - (_atk_t - 0.5) / 0.5))  # 消散
+                        if _atk_flash > 0:
+                            frame = self._apply_flash(frame, _atk_flash)
                 frames.append(frame)
             animations[anim_name] = frames
         
@@ -5067,6 +5085,21 @@ class CharacterEngine:
         _shadow_base_g = max(0, body_color[1] // 4 - 10)
         _shadow_base_b = max(0, body_color[2] // 4 + 5)   # 蓝色少减→偏冷色调
         
+        # v0.3.68: Bayer抖动地面阴影（Dithered Ground Shadow）
+        # 原理：像素美术中，纯实心阴影在低分辨率下显得粗糙生硬。
+        #       用Bayer矩阵抖动(checkerboard pattern)替代实心填充，
+        #       阴影边缘呈现像素化的半透明渐变——这是像素美术的经典技法，
+        #       Celeste/Hyper Light Drifter等游戏都使用抖动阴影。
+        #       抖动阈值从中心(低阈值=实心)向边缘(高阈值=稀疏)递增，
+        #       结合高斯衰减alpha，形成"中心实心→边缘渐隐抖动"的自然过渡。
+        # 4×4 Bayer矩阵阈值（0-15标准化到0.0-1.0）
+        _bayer4 = [
+            [ 0,  8,  2, 10],
+            [12,  4, 14,  6],
+            [ 3, 11,  1,  9],
+            [15,  7, 13,  5],
+        ]
+        
         for y in range(max(0, shadow_y_base - shadow_ry), min(H, shadow_y_base + shadow_ry + 1)):
             for x in range(max(0, cx - shadow_rx), min(W, cx + shadow_rx)):
                 dx_s = (x - cx) / max(1, shadow_rx)
@@ -5077,6 +5110,14 @@ class CharacterEngine:
                     falloff = 1.0 - dist_sq
                     sa = int(shadow_alpha_base * falloff * falloff)
                     if sa > 3 and canvas[y][x][3] == 0:
+                        # Bayer抖动：归一化距离→抖动阈值比较
+                        # 归一化距离 0.0(中心)→1.0(边缘) 映射到阈值 0.2→0.95
+                        # 中心区域几乎所有Bayer值都通过→接近实心
+                        # 边缘区域仅低Bayer值通过→稀疏像素点
+                        _dither_threshold = 0.2 + (1.0 - falloff) * 0.75
+                        _bayer_val = _bayer4[y % 4][x % 4] / 15.0
+                        if _bayer_val >= _dither_threshold:
+                            continue  # 抖动跳过：此像素不绘制，形成棋盘格稀疏
                         # 仅在空白区域绘制阴影（不覆盖角色像素）
                         # 边缘略微提亮阴影色（模拟环境光对阴影边缘的照亮）
                         _edge_bright = int((1.0 - falloff) * 15)
