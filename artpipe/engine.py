@@ -2791,6 +2791,35 @@ class CharacterEngine:
                         a
                     )
         
+        # ---- v0.3.55a: 肘关节细节(Elbow Joint Detail) — 手臂中段关节结构线增强 ----
+        # 原理：与v0.3.54膝关节细节同理，手臂在肘部处有关节弯曲，
+        #       在手臂中段(约45%位置)添加1px高光线+1px暗线可以暗示肘关节结构，
+        #       让手臂看起来不只是"一根色条"而是有关节弯曲可能的肢体。
+        #       在像素美术中，即使手臂没有实际弯曲，暗示关节位置也能提升可读性。
+        # 实现：在手臂纵向约45%位置（肘部），画1px暗线增强关节深度感，
+        #       在暗线上方1px画1px高光线暗示骨骼突出。
+        _elbow_t = 0.45  # 肘关节相对位置（上臂:前臂 ≈ 45:55）
+        _elbow_highlight_color = (min(255, skin[0] + 12), min(255, skin[1] + 10), min(255, skin[2] + 8))
+        _elbow_shadow_color = (max(0, skin[0] - 18), max(0, skin[1] - 16), max(0, skin[2] - 14))
+        # 左臂肘关节
+        _le_y = int(arm_top_y + lady + arm_h * _elbow_t)
+        if 0 <= _le_y < H:
+            for _ex in range(max(0, _larm_x0), min(W, _larm_x0 + arm_w)):
+                if canvas[_le_y][_ex][3] > 0:
+                    # 高光线（肘上1px）
+                    if _le_y - 1 >= 0 and canvas[_le_y - 1][_ex][3] > 0:
+                        canvas[_le_y - 1][_ex] = (*_elbow_highlight_color, 255)
+                    # 暗线（肘关节位置）
+                    canvas[_le_y][_ex] = (*_elbow_shadow_color, 255)
+        # 右臂肘关节
+        _re_y = int(arm_top_y + rady + arm_h * _elbow_t)
+        if 0 <= _re_y < H:
+            for _ex in range(max(0, _rarm_x0), min(W, _rarm_x0 + arm_w)):
+                if canvas[_re_y][_ex][3] > 0:
+                    if _re_y - 1 >= 0 and canvas[_re_y - 1][_ex][3] > 0:
+                        canvas[_re_y - 1][_ex] = (*_elbow_highlight_color, 255)
+                    canvas[_re_y][_ex] = (*_elbow_shadow_color, 255)
+
         # ---- 类型专属配件 ----
         # 战士：盾牌
         if type_cfg.get("has_shield"):
@@ -4531,6 +4560,35 @@ class CharacterEngine:
                 for x in range(W):
                     if _aa_pass[y][x][3] > 0 and canvas[y][x][3] == 0:
                         canvas[y][x] = _aa_pass[y][x]
+        
+        # ---- v0.3.55b: 角色氛围光晕(Character Ambient Aura) — accent色柔光背景增强角色存在感 ----
+        # 原理：专业像素美术和游戏美术中常用技法——在角色周围添加一层微弱的彩色光晕，
+        #       其颜色取自角色的强调色(accent)。效果类似于RPG游戏中角色被选中时的轮廓光，
+        #       或Celeste/Owlboy等独立游戏中角色自带的微弱环境光。
+        #       作用：(1)在任何背景下都能让角色"跳出"背景 (2)统一角色的色彩印象
+        #            (3)暗示角色的"存在感/能量场"，尤其是法师/施法类角色
+        # 实现：计算角色包围盒中心，在角色像素周围2-3px范围的空白区域，
+        #       用accent色的极低透明度(alpha=18-25)绘制椭圆光晕。
+        #       光晕仅在透明像素上绘制，不覆盖任何角色内容。
+        _aura_cx = cx  # 角色水平中心（复用已有的cx变量）
+        _aura_cy = (body_top + leg_top + leg_h + body_dy) // 2  # 角色垂直中心
+        _aura_rx = int(body_draw_w * 1.8)  # 光晕水平半径（比身体宽80%）
+        _aura_ry = int((leg_top + leg_h + body_dy - body_top) * 0.55)  # 光晕垂直半径
+        _aura_color = (min(255, accent[0] + 30), min(255, accent[1] + 30), min(255, accent[2] + 30))
+        if _aura_rx > 2 and _aura_ry > 2:
+            for _ay in range(max(0, _aura_cy - _aura_ry), min(H, _aura_cy + _aura_ry)):
+                for _ax in range(max(0, _aura_cx - _aura_rx), min(W, _aura_cx + _aura_rx)):
+                    if canvas[_ay][_ax][3] > 0:
+                        continue  # 跳过已有内容
+                    _adx = (_ax - _aura_cx) / max(1, _aura_rx)
+                    _ady = (_ay - _aura_cy) / max(1, _aura_ry)
+                    _adist_sq = _adx * _adx + _ady * _ady
+                    if _adist_sq <= 1.0:
+                        # 内部渐变：边缘最亮(alpha=22)，中心最淡(alpha=8)
+                        _a_falloff = _adist_sq  # 0=中心 1=边缘
+                        _a_alpha = int(8 + 14 * _a_falloff)
+                        if _a_alpha > 4:
+                            canvas[_ay][_ax] = (*_aura_color, _a_alpha)
         
         return canvas
 
