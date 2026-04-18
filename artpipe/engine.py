@@ -2,7 +2,7 @@
 ArtPipe 角色生成引擎 v0.3
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 纯Python实现，零外部依赖
-v0.3.39: 发丝纹理(竖直交替亮暗条纹模拟发丝走向,受光侧增强背光侧柔化)+袖口分色线(衣物/皮肤交界1px深色线,inner separation line增强部件分离感)
+v0.3.40: Selout选择性描边(描边色与相邻表面色3:1混合,亮面附近描边微亮/暗面附近保持深色,3D弹出效果)+垂直色温梯度(顶部冷偏移模拟天空环境光R-5/B+5,底部暖偏移模拟地面反射光R+6/G+3/B-3,角色嵌入环境感)
 v0.3.34: 周期性眨眼动画(idle/walk/cast末帧闭合眼睑线+抑制高光)+身体椭球法线渐变着色(椭球法线点积光源方向补充横向立体感)
 v0.3.30: HSV色温偏移(高光/阴影色彩分层升级为真正的HSV色相旋转)+修复垂直抖动矩阵为2D索引
 v0.3.26: 关节缝隙阴影(Joint Crease AO,颈部/腰部/肩部衔接处渐变暗化增强部件分离感)
@@ -3147,10 +3147,35 @@ class CharacterEngine:
                     if found:
                         outline_layer[y][x] = True
             
+            # v0.3.40: Selout(选择性描边) — 描边亮度跟随相邻表面色，增强3D弹出效果
+            # 原理：像素美术技法"selout"(selective outlining)：描边颜色不是纯黑固定色，
+            #       而是根据相邻的表面色微调亮度。靠近亮色表面(如高光、皮肤)的描边像素
+            #       会稍微变亮，靠近暗色表面(如深色服装、阴影)的保持深色。
+            #       这让描边与角色色融合而不是生硬的纯黑切割线，创造微妙的3D弹出效果。
+            # 实现：对每个描边像素，找最近的不透明邻居，取其颜色与描边色按3:1混合。
+            #       75%描边+25%表面色：保留描边的轮廓功能，同时让描边"呼吸"融入角色。
             for y in range(H):
                 for x in range(W):
                     if outline_layer[y][x]:
-                        canvas[y][x] = (*outline, 255)
+                        # 找到最近的不透明邻居颜色（优先4方向，再8方向对角线）
+                        _near_r, _near_g, _near_b = 0, 0, 0
+                        _found = False
+                        for dx2, dy2 in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(-1,1),(1,1)]:
+                            nx, ny = x+dx2, y+dy2
+                            if 0 <= nx < W and 0 <= ny < H and opaque[ny][nx]:
+                                _nr, _ng, _nb, _na = canvas[ny][nx]
+                                if _na > 0:
+                                    _near_r, _near_g, _near_b = _nr, _ng, _nb
+                                    _found = True
+                                    break
+                        if _found:
+                            # 3:1混合 — 描边色为主，表面色微调
+                            _sr = min(255, (outline[0] * 3 + _near_r) // 4)
+                            _sg = min(255, (outline[1] * 3 + _near_g) // 4)
+                            _sb = min(255, (outline[2] * 3 + _near_b) // 4)
+                            canvas[y][x] = (_sr, _sg, _sb, 255)
+                        else:
+                            canvas[y][x] = (*outline, 255)
         
         # ---- 像素化处理 ----
         if ps > 1:
@@ -3275,6 +3300,49 @@ class CharacterEngine:
                             min(255, g + rim_strength),
                             min(255, b + max(0, rim_strength - 4)),  # 蓝色少增一点
                             a
+                        )
+        
+        # ---- v0.3.40: 垂直色温梯度（Vertical Color Temperature Gradient）----
+        # 原理：真实光照中存在两种环境色温来源：
+        #   1) 地面反射暖色光到角色下半身（间接光照 bounce light，偏暖黄/橙）
+        #   2) 天空提供冷色环境光到角色上半身（sky ambient，偏冷蓝）
+        #   这种纵向色温变化让角色"嵌入"环境中，而非漂浮在虚空中。
+        # 实现：对每个不透明像素根据纵向位置微调色温：
+        #   底部(y/H > 0.7): 暖偏移 R+4/G+2/B-3（模拟地面反射暖光）
+        #   顶部(y/H < 0.3): 冷偏移 R-3/G-1/B+4（模拟天空冷色环境光）
+        #   中间区域自然过渡，不做额外处理。
+        #   偏移量极小（4-6单位），不影响角色本身色调，只增加环境色温感。
+        for y in range(H):
+            _vt = y / max(1, H - 1)  # 0=顶 1=底
+            if _vt < 0.3:
+                # 顶部冷偏移（天空环境光：蓝↑红↓）
+                _cold = (0.3 - _vt) / 0.3  # 0→1 强度渐变
+                _cold_amt = int(_cold * 5)  # 最大5个单位
+                if _cold_amt > 0:
+                    for x in range(W):
+                        _px = canvas[y][x]
+                        if _px[3] == 0:
+                            continue
+                        canvas[y][x] = (
+                            max(0, _px[0] - _cold_amt),       # R↓ 冷色
+                            _px[1],                             # G不变
+                            min(255, _px[2] + _cold_amt),      # B↑ 冷色
+                            _px[3]
+                        )
+            elif _vt > 0.7:
+                # 底部暖偏移（地面反射光：红↑蓝↓）
+                _warm = (_vt - 0.7) / 0.3  # 0→1 强度渐变
+                _warm_amt = int(_warm * 6)  # 最大6个单位
+                if _warm_amt > 0:
+                    for x in range(W):
+                        _px = canvas[y][x]
+                        if _px[3] == 0:
+                            continue
+                        canvas[y][x] = (
+                            min(255, _px[0] + _warm_amt),     # R↑ 暖色
+                            min(255, _px[1] + _warm_amt // 2), # G微↑
+                            max(0, _px[2] - _warm_amt // 2),  # B↓ 暖色
+                            _px[3]
                         )
         
         # ---- v0.3.15: 像素聚簇清理（Pixel Cluster Cleanup）----
