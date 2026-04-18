@@ -1,5 +1,6 @@
 """
 ArtPipe 角色生成引擎 v0.3
+v0.3.57: 胸甲V形线(Chest Plate V-Line,肩到胸口的V形暗线暗示胸甲/胸肌结构)+下颌轮廓线(Jawline Contour,头部底部弧形暗线定义下颌形状)
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 v0.3.53: 攻击武器动态发光(Attack Weapon Glow,蓄力微光→挥出峰值→收招渐熄三阶段)+防御武器微光(Defend Glow,格挡时武器微微闪光)+受击冲击粒子(Hurt Impact Sparks,受击时6颗accent色火花从身体中心向外扩散渐淡)
 v0.3.49: 攻击武器挥动轨迹(Weapon Swing Trail,攻击挥出阶段3步渐隐残影模拟运动模糊)+行走/奔跑地面扬尘粒子(Walk/Run Dust Particles,脚着地帧地面灰尘颗粒增加运动重量感)
@@ -2016,6 +2017,59 @@ class CharacterEngine:
                             else:
                                 canvas[ey][ex] = (*skin, 255)
         
+        # ---- v0.3.57b: 下颌轮廓线（Jawline Contour）— 头部底部弧形暗线定义下颌形状 ----
+        # 原理：真实人脸中，下颌线(jawline)是头部底部的一道弧形转折线——从耳前延伸到下巴尖。
+        #       在3D视角下，下颌线是头部和颈部之间的几何分界线，具有明显的明暗转折。
+        #       专业像素美术中，在头部球体底部添加一条弧形暗线来暗示下颌骨结构：
+        #       (1)让头部从"圆球"变为"有骨骼结构的脸"
+        #       (2)增强头-颈分离感（与v0.3.50a下巴投射阴影互补）
+        #       (3)为不同角色类型提供面部差异化基础（战士方颌/法师尖颌等）
+        # 实现：在头部球体底部（head_cy + head_r*0.6 ~ head_cy + head_r），
+        #       沿球面弧线绘制1px宽的暗化线。暗化量沿弧线变化：
+        #       中间（下巴尖）最浅（-8），两侧（下颌角）最深（-15），
+        #       因为下颌角处骨骼转折更锐利，产生更深的阴影。
+        _jaw_y_start = head_cy + int(head_r * 0.60)
+        _jaw_y_end = head_cy + head_r
+        for _jy in range(max(0, _jaw_y_start), min(H, _jaw_y_end)):
+            # 计算当前Y对应的头部球面X范围
+            _jdy = _jy - head_cy
+            # 球面方程: dx^2 + dy^2 <= r^2 → dx范围
+            _jdx_max_sq = head_r * head_r - _jdy * _jdy
+            if _jdx_max_sq <= 0:
+                continue
+            _jdx_max = int(_jdx_max_sq ** 0.5)
+            # 在球面边缘的左右各1px处画暗线
+            for _jside in [-1, 1]:
+                _jx = cx + _jside * _jdx_max
+                if 0 <= _jx < W:
+                    _jpx = canvas[_jy][_jx]
+                    if _jpx[3] > 0:
+                        # 纵向位置因子：0=顶部(jaw_start) 1=底部(jaw_end)
+                        _jt = (_jy - _jaw_y_start) / max(1, _jaw_y_end - _jaw_y_start)
+                        # 横向位置因子：靠近中心（下巴尖）浅，靠近两侧（下颌角）深
+                        _jh_factor = abs(_jx - cx) / max(1, _jdx_max)
+                        _j_darken = int(8 + 7 * _jh_factor)
+                        # 光照补偿：左侧受光面稍浅
+                        if _jside == -1:
+                            _j_darken = max(4, _j_darken - 3)
+                        canvas[_jy][_jx] = (
+                            max(0, _jpx[0] - _j_darken),
+                            max(0, _jpx[1] - _j_darken),
+                            max(0, _jpx[2] - _j_darken + 1),
+                            _jpx[3]
+                        )
+            # 也暗化下巴尖底部1px弧线（中间区域）
+            if _jy >= _jaw_y_end - 2:
+                for _jmx in range(max(0, cx - max(1, _jdx_max // 2)), min(W, cx + max(1, _jdx_max // 2) + 1)):
+                    _jmpx = canvas[_jy][_jmx]
+                    if _jmpx[3] > 0:
+                        canvas[_jy][_jmx] = (
+                            max(0, _jmpx[0] - 6),
+                            max(0, _jmpx[1] - 6),
+                            max(0, _jmpx[2] - 5),
+                            _jmpx[3]
+                        )
+
         # ---- v0.3.50a: 下巴投射阴影（Chin Cast Shadow）— 下巴在下颈部/上胸部的柔和投影 ----
         # 原理：真实光照中，下巴作为突出结构会在下方产生一道弧形阴影投射到颈部和上胸部。
         #       这是头-颈区域最重要的深度线索之一，缺少它会让下巴看起来"融进"脖子。
@@ -2329,6 +2383,53 @@ class CharacterEngine:
                         _a
                     )
         
+        # ---- v0.3.57a: 胸甲V形线 (Chest Plate V-Line) — 从肩到胸口的V形暗线暗示胸甲/胸肌结构 ----
+        # 原理：在专业像素美术中，胸甲/胸肌区域常通过V形暗线来定义形状。
+        #       经典RPG角色（如《最终幻想》战士、《塞尔达》林克）的躯干都有明显的
+        #       胸肌分界线——从肩部两侧向胸骨中心汇聚成V字形状。
+        #       这条线的视觉效果：
+        #       (1)将躯干从一个"平面色块"变为"有结构的3D表面"
+        #       (2)与v0.3.56a肩线暗带配合：肩线暗→V线分界→胸骨中线，形成完整上体结构
+        #       (3)暗示角色穿着装甲/紧身衣，而非简单地"涂了一块颜色"
+        #       (4)V形线条收敛点指向腰带扣(v0.3.56b)，形成视觉引导
+        # 实现：在身体20%-42%高度区域（胸部），画两条对称的斜线：
+        #   左线：从(cx - _contour_hw*0.75, body_top+20%h) → (cx, body_top+42%h)
+        #   右线：从(cx + _contour_hw*0.75, body_top+20%h) → (cx, body_top+42%h)
+        #   线条颜色=底色暗化8-16单位，宽度1px
+        #   受光侧(左)线稍浅（暗化8-14），背光侧(右)线稍深（暗化12-18）
+        _vline_top = body_top + int(body_draw_h * 0.20)
+        _vline_bot = body_top + int(body_draw_h * 0.42)
+        _vline_hw = max(2, int(_contour_hw * 0.75))
+        if _vline_bot > _vline_top and _vline_hw >= 2:
+            # 左V线（受光侧，稍浅）
+            for _vly in range(max(0, _vline_top), min(H, _vline_bot + 1)):
+                _vlt = (_vly - _vline_top) / max(1, _vline_bot - _vline_top)
+                _vlx = int((cx - _vline_hw) + _vline_hw * _vlt)
+                if 0 <= _vlx < W:
+                    _vpx = canvas[_vly][_vlx]
+                    if _vpx[3] > 0:
+                        _vl_darken = int(8 + 6 * _vlt)
+                        canvas[_vly][_vlx] = (
+                            max(0, _vpx[0] - _vl_darken),
+                            max(0, _vpx[1] - _vl_darken),
+                            max(0, _vpx[2] - _vl_darken),
+                            _vpx[3]
+                        )
+            # 右V线（背光侧，稍深）
+            for _vly in range(max(0, _vline_top), min(H, _vline_bot + 1)):
+                _vlt = (_vly - _vline_top) / max(1, _vline_bot - _vline_top)
+                _vlx = int((cx + _vline_hw) - _vline_hw * _vlt)
+                if 0 <= _vlx < W:
+                    _vpx = canvas[_vly][_vlx]
+                    if _vpx[3] > 0:
+                        _vl_darken = int(12 + 6 * _vlt)
+                        canvas[_vly][_vlx] = (
+                            max(0, _vpx[0] - _vl_darken),
+                            max(0, _vpx[1] - _vl_darken),
+                            max(0, _vpx[2] - _vl_darken + 2),
+                            _vpx[3]
+                        )
+
         # ---- v0.3.56b: 腰带细节 (Belt Detail) — 腰部分色带+带扣高光增强装备层次 ----
         # 原理：在RPG/冒险类像素角色中，腰带(belt)是核心视觉元素之一：
         #       (1) 它标记了上体（胸/腹）和下体（腿/裙）的分界线
