@@ -188,6 +188,8 @@ class ArtPipeAPI(BaseHTTPRequestHandler):
                 seed=data.get("seed"),
                 render_mode=render_mode,
                 ai_backend=data.get("ai_backend", "pollinations"),
+                ai_width=data.get("ai_width", 512),
+                ai_height=data.get("ai_height", 768),
             )
             
             # Export formats
