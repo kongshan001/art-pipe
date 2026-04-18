@@ -2510,6 +2510,72 @@ class CharacterEngine:
                 if canvas[_sl_y_r][_slx][3] > 0:
                     canvas[_sl_y_r][_slx] = (*_sleeve_line_color, 255)
         
+        # ---- v0.3.42: 手臂椭球法线着色（Arm Ellipsoid Normal Shading） ----
+        # 原理：与身体v0.3.34椭球法线着色相同的3D体积感技术，应用于手臂。
+        #       手臂是细长的椭圆柱体，用椭球近似。法线·光源方向→横向明暗变化。
+        #       光源从左上方照射，因此手臂左侧偏亮、右侧偏暗，与身体的光照一致。
+        #       此前手臂只有Bayer抖动纵向渐变（v0.3.38），缺少横向3D立体感，
+        #       使手臂看起来比身体"扁平"。添加椭球法线后，手臂与身体的3D感统一。
+        # 实现：遍历左右手臂区域的像素，计算椭球法线与光源方向的点积，
+        #       微调亮度（±6），不影响已有的Bayer纵向渐变。
+        _arm_nx_factor = 1.0 / max(1, arm_w // 2)   # 手臂横向归一化（窄椭球）
+        _arm_ny_factor = 1.0 / max(1, arm_h // 2)    # 手臂纵向归一化
+        _arm_brightness = 6  # 手臂比身体细，亮度调节幅度略小（身体是±8）
+        # 左臂椭球法线着色
+        for y in range(max(0, arm_top_y + lady), min(H, arm_bot_y + lady)):
+            for x in range(max(0, _larm_x0), min(W, _larm_x0 + arm_w)):
+                r, g, b, a = canvas[y][x]
+                if a == 0:
+                    continue
+                adx = x - (_larm_x0 + arm_w / 2)  # 手臂中心x
+                ady = y - (arm_top_y + lady + arm_h / 2)  # 手臂中心y
+                nx = adx * _arm_nx_factor
+                ny = ady * _arm_ny_factor
+                n_len = (nx*nx + ny*ny) ** 0.5
+                if n_len > 1.0:
+                    continue  # 椭球外不处理
+                if n_len < 0.01:
+                    nx_n, ny_n = 0.0, -1.0
+                else:
+                    nx_n = nx / n_len
+                    ny_n = ny / n_len
+                dot = nx_n * _blx + ny_n * _bly  # 复用身体的光源方向
+                brightness = int(dot * _arm_brightness)
+                if brightness != 0:
+                    canvas[y][x] = (
+                        min(255, max(0, r + brightness)),
+                        min(255, max(0, g + brightness)),
+                        min(255, max(0, b + brightness)),
+                        a
+                    )
+        # 右臂椭球法线着色
+        for y in range(max(0, arm_top_y + rady), min(H, arm_bot_y + rady)):
+            for x in range(max(0, _rarm_x0), min(W, _rarm_x0 + arm_w)):
+                r, g, b, a = canvas[y][x]
+                if a == 0:
+                    continue
+                adx = x - (_rarm_x0 + arm_w / 2)
+                ady = y - (arm_top_y + rady + arm_h / 2)
+                nx = adx * _arm_nx_factor
+                ny = ady * _arm_ny_factor
+                n_len = (nx*nx + ny*ny) ** 0.5
+                if n_len > 1.0:
+                    continue
+                if n_len < 0.01:
+                    nx_n, ny_n = 0.0, -1.0
+                else:
+                    nx_n = nx / n_len
+                    ny_n = ny / n_len
+                dot = nx_n * _blx + ny_n * _bly
+                brightness = int(dot * _arm_brightness)
+                if brightness != 0:
+                    canvas[y][x] = (
+                        min(255, max(0, r + brightness)),
+                        min(255, max(0, g + brightness)),
+                        min(255, max(0, b + brightness)),
+                        a
+                    )
+        
         # ---- 类型专属配件 ----
         # 战士：盾牌
         if type_cfg.get("has_shield"):
@@ -3612,6 +3678,43 @@ class CharacterEngine:
                     r, g, b, a = canvas[y][sx]
                     if a > 0:
                         canvas[y][sx] = (max(0, r - 14), max(0, g - 14), max(0, b - 14), a)
+
+        # ---- v0.3.42: 地面反射光（Ground Bounce Light）— 从地面向上反射的间接光照 ----
+        # 原理：真实光照中，光线照射到地面后会反射回角色底部，形成向上的填充光。
+        #       这就是"bounce light"或"indirect illumination"——角色下半身不会完全黑暗，
+        #       因为地面反射的暖色光会照亮腿部和身体下缘。
+        #       专业像素美术技法（MortMort 2024, Slynyrd教程）将其列为"必备"效果之一。
+        #       与v0.3.40的垂直色温梯度不同：色温梯度是全局环境色，而bounce light是
+        #       从地面特定方向反射的有色光，强度受角色与地面距离影响（跳跃时减弱）。
+        # 实现：对角色底部区域的每个不透明像素，根据纵向位置和与地面的距离，
+        #       添加一个微暖的亮度提升（R+6/G+3/B+1），模拟地面漫反射。
+        #       底部像素（靠近脚部）最强，往上渐弱；跳跃时减弱。
+        _bounce_ground_y = leg_top + leg_h + body_dy  # 地面Y位置
+        _bounce_intensity = 0.18  # 基础强度
+        if body_dy < -2:
+            # 跳跃时地面反射光减弱（离地面越远，反射越弱）
+            _bounce_intensity = max(0.04, 0.18 - abs(body_dy) * 0.008)
+        for y in range(max(0, _bounce_ground_y - H // 3), min(H, _bounce_ground_y)):
+            # 距离地面越近，反射光越强（二次衰减）
+            _bounce_dist = (_bounce_ground_y - y) / max(1, H // 3)  # 0=地面 1=远
+            if _bounce_dist >= 1.0:
+                continue
+            _bounce_t = (1.0 - _bounce_dist) ** 2  # 二次衰减：靠近地面强
+            _bounce_r = int(_bounce_t * _bounce_intensity * 35)  # R提升（暖色反射）
+            _bounce_g = int(_bounce_t * _bounce_intensity * 18)  # G微提升
+            _bounce_b = int(_bounce_t * _bounce_intensity * 5)   # B微提升（地面偏暖）
+            if _bounce_r < 1 and _bounce_g < 1:
+                continue
+            for x in range(W):
+                _bp = canvas[y][x]
+                if _bp[3] == 0:
+                    continue
+                canvas[y][x] = (
+                    min(255, _bp[0] + _bounce_r),
+                    min(255, _bp[1] + _bounce_g),
+                    min(255, _bp[2] + _bounce_b),
+                    _bp[3]
+                )
 
         # ---- v0.3.13: 地面阴影投射 — 椭圆形渐变阴影增强空间感 ----
         # 在角色脚底位置绘制一个椭圆形半透明阴影，模拟地面投影
