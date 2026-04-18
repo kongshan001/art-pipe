@@ -898,7 +898,51 @@ class CharacterEngine:
                     # 受击白闪效果
                     frame = self._apply_flash(frame, 80)
                 elif anim_name == "die":
-                    # 死亡渐隐
+                    # v0.3.70: 死亡消散粒子（Death Dissipation Particles）— accent色光粒向上飘散
+                    # 原理：RPG/动作游戏经典死亡特效——角色消亡时从身体飘出光粒/碎片，
+                    #       向上缓慢飞散并逐渐淡出，营造"灵魂升华/能量消散"的氛围。
+                    #       Celeste/Hollow Knight等独立游戏大量使用这种"粒子化消散"效果。
+                    #       配合原有的alpha渐隐，让死亡不只是"淡出"，而是"分解成光"。
+                    # 实现：每帧从角色已渲染的像素中采样若干点，在这些点上方绘制小光粒，
+                    #       光粒颜色使用accent色（角色代表色），随t增大向上飘移+alpha递减。
+                    accent = palette[2]
+                    _W, _H = self.CANVAS_W, self.CANVAS_H
+                    # 找到角色边界框
+                    _bbox_x0, _bbox_x1, _bbox_y0, _bbox_y1 = _W, 0, _H, 0
+                    for _dy in range(_H):
+                        for _dx in range(_W):
+                            if frame[_dy][_dx][3] > 0:
+                                _bbox_x0 = min(_bbox_x0, _dx)
+                                _bbox_x1 = max(_bbox_x1, _dx)
+                                _bbox_y0 = min(_bbox_y0, _dy)
+                                _bbox_y1 = max(_bbox_y1, _dy)
+                    if _bbox_x0 < _bbox_x1:
+                        # 消散粒子参数
+                        _n_parts = 5 + int(t * 8)  # 粒子数随t增加: 5→13
+                        _base_seed = f * 37 + 7  # 帧确定性种子
+                        for _pi in range(_n_parts):
+                            # 粒子X: 在角色宽度内伪随机分布
+                            _px = _bbox_x0 + ((_base_seed + _pi * 23) % max(1, _bbox_x1 - _bbox_x0))
+                            # 粒子Y: 从角色中部出发，向上飘移（t越大飘越高）
+                            _py_start = _bbox_y0 + (_bbox_y1 - _bbox_y0) // 3
+                            _float_up = int(t * 12 + (_pi * 3) % 8)
+                            _py = _py_start - _float_up
+                            # 粒子alpha: 首帧较亮，随t递减；边缘粒子更淡
+                            _p_alpha = int(140 * (1.0 - t * 0.8) * max(0.2, 1.0 - _pi * 0.06))
+                            # 粒子颜色: accent色微亮偏暖
+                            _pr = min(255, accent[0] + 50)
+                            _pg = min(255, accent[1] + 40)
+                            _pb = min(255, accent[2] + 20)
+                            if 0 <= _py < _H and 0 <= _px < _W and _p_alpha > 10:
+                                frame[_py][_px] = (_pr, _pg, _pb, min(255, _p_alpha))
+                                # 1px光晕（上下左右各一个半透明像素）
+                                for _gdx, _gdy, _ga_mult in [(1,0,0.4),(-1,0,0.4),(0,1,0.4),(0,-1,0.4)]:
+                                    _gx, _gy = _px + _gdx, _py + _gdy
+                                    _ga = int(_p_alpha * _ga_mult)
+                                    if 0 <= _gy < _H and 0 <= _gx < _W and _ga > 5:
+                                        if frame[_gy][_gx][3] < _ga:  # 不覆盖更亮的像素
+                                            frame[_gy][_gx] = (_pr, _pg, _pb, _ga)
+                    # 死亡渐隐（原有逻辑）
                     alpha = max(0, int(255 * (1 - t)))
                     frame = self._apply_alpha(frame, alpha)
                 elif anim_name == "cast":
@@ -3855,6 +3899,56 @@ class CharacterEngine:
                     if e2 < dx_w:
                         err += dx_w
                         y0 += sy
+                # v0.3.70: 剑刃金属光泽脉冲(Blade Sheen Pulse) — idle/walk时刃面光斑沿刃线游走
+                # 原理：金属表面在光线角度微变时会产生移动的高光带，这种现象在游戏中
+                #       用"sheen pulse"模拟——一个沿刀刃移动的亮斑，让武器"活"起来。
+                #       就像现实中旋转刀片时看到的反射光游走效果。
+                #       只在非战斗动画(idle/walk/run)中触发，战斗时用已有的挥动轨迹。
+                if anim in ("idle", "walk", "run") and blade_total > 4:
+                    # 光斑位置随帧索引在刃线上来回移动（正弦波）
+                    _sheen_phase = (frame_idx / 5.0) * math.pi + 0.5  # 每周期约5帧
+                    _sheen_pos = 0.3 + 0.4 * (0.5 + 0.5 * math.sin(_sheen_phase))  # 刃线30%~70%
+                    _sheen_idx = int(_sheen_pos * blade_total)
+                    # 重新追踪刃线路径找到光斑像素坐标
+                    _sx0, _sy0 = weapon_base_x, weapon_base_y
+                    _sx1, _sy1 = tip_x, min(H-1, tip_y)
+                    _sdx = abs(_sx1 - _sx0); _sdy = abs(_sy1 - _sy0)
+                    _ssx = 1 if _sx0 < _sx1 else -1; _ssy = 1 if _sy0 < _sy1 else -1
+                    _serr = _sdx - _sdy; _spc = 0
+                    while _spc <= _sheen_idx + 1:
+                        if _spc == _sheen_idx and 0 <= _sy0 < H and 0 <= _sx0 < W:
+                            # 光斑中心: 提亮+冷白色偏移
+                            _sc = canvas[_sy0][_sx0]
+                            if _sc[3] > 0:
+                                canvas[_sy0][_sx0] = (
+                                    min(255, _sc[0] + 35),
+                                    min(255, _sc[1] + 35),
+                                    min(255, _sc[2] + 40),  # 蓝更多→冷白金属光泽
+                                    _sc[3]
+                                )
+                            # 光斑扩散: 左右±1px半透明光晕
+                            for _soff in [-1, 1]:
+                                _sox = _sx0 + _soff
+                                if 0 <= _sy0 < H and 0 <= _sox < W:
+                                    _soc = canvas[_sy0][_sox]
+                                    if _soc[3] > 0:
+                                        canvas[_sy0][_sox] = (
+                                            min(255, _soc[0] + 18),
+                                            min(255, _soc[1] + 18),
+                                            min(255, _soc[2] + 22),
+                                            _soc[3]
+                                        )
+                            break
+                        _spc += 1
+                        if _spc > blade_total + 2:
+                            break
+                        if _sx0 == _sx1 and _sy0 == _sy1:
+                            break
+                        _se2 = 2 * _serr
+                        if _se2 > -_sdy:
+                            _serr -= _sdy; _sx0 += _ssx
+                        if _se2 < _sdx:
+                            _serr += _sdx; _sy0 += _ssy
                 # 剑柄护手(十字格): 在base位置画2px宽的横线
                 guard_y = weapon_base_y - 1
                 for gx_off in range(-2, 3):
