@@ -890,9 +890,20 @@ class CharacterEngine:
             pose["head_dy"] = int(breath * 1.5)
             # 胸腔横向缩放：吸气膨胀，呼气收缩（±6%）
             pose["body_scale_x"] = 1.0 + breath * 0.06
-            # 手臂随呼吸微微摆动（延迟0.3弧度）
+            # v0.3.61: 横向重心转移（Idle Body Sway）— 慢速左右微移模拟活人站立
+            # 原理：真人静止站立时重心不会完全固定，会缓慢在左右脚之间转移，
+            #       这是最自然的"呼吸"动作之一（迪士尼12原则：Secondary Action）。
+            #       频率设为呼吸的一半(π而非2π)，两个动作不完全同步避免机械感。
+            #       ±1px偏移在64px宽画布上清晰可感但不突兀。
+            #       同时激活v0.3.48头发次级运动(body_dx≠0时hair_sway生效)。
+            sway = math.sin(t * math.pi)  # 半周期，比呼吸慢一倍
+            pose["body_dx"] = round(sway * 1.2)
+            # v0.3.61: 手臂异步微摆 — 左臂延迟0.6rad产生自然不对称
+            # 原理：真人两臂摆动幅度和相位总略有差异(神经不对称性)，
+            #       同步摆动看起来像机器人。0.6rad≈34°相位差足以产生
+            #       可感知但不过分的不对称，比v0.3.8双臂完全同步更自然。
             arm_sway = math.sin(t * math.pi * 2 + 0.3)
-            pose["left_arm_dy"] = round(arm_sway * 1.5)
+            pose["left_arm_dy"] = round(math.sin(t * math.pi * 2 + 0.3 + 0.6) * 1.5)
             pose["right_arm_dy"] = round(arm_sway * 1.5)
             
         elif anim == "walk":
