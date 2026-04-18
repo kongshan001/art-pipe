@@ -98,24 +98,25 @@ PALETTES = {
 #   belt=腰带(身体中部横条纹), shoulder_pads=肩甲(肩膀处方形),
 #   scarf=围巾(脖子处飘逸带), earing=耳环(头部侧面小点),
 #   belt_pouch=腰包(侧面小方块), collar=衣领(脖子处环绕线)
+#   wrist_guards=护腕(手腕处环形装饰, v0.3.35)
 CHAR_TYPES = {
     "warrior": {
-        "name": "战士", "head_ratio": 0.18, "body_w": 0.35,
+        "name": "战士", "head_ratio": 0.16, "body_w": 0.35,  # v0.3.35: 缩小头部(0.18→0.16)配合宽壮体型，更紧凑有力
         "has_shield": True, "weapon": "sword",
         "face_type": "serious",
         "body_ratio": 1.15,  # 宽壮躯干
         "leg_ratio": 0.90,   # 短粗腿
         "arm_ratio": 1.10,   # 粗壮手臂
-        "accessories": ["belt", "shoulder_pads", "scarf", "belt_pouch"],
+        "accessories": ["belt", "shoulder_pads", "scarf", "belt_pouch", "wrist_guards"],  # v0.3.35: 新增护腕
     },
     "mage": {
-        "name": "法师", "head_ratio": 0.20, "body_w": 0.28,
+        "name": "法师", "head_ratio": 0.22, "body_w": 0.28,  # v0.3.35: 增大头部(0.20→0.22)配合纤细体型，更知性灵动
         "has_robe": True, "weapon": "staff",
         "face_type": "gentle",
         "body_ratio": 0.90,  # 纤细身体
         "leg_ratio": 1.15,   # 修长腿
         "arm_ratio": 0.95,   # 细长手臂
-        "accessories": ["scarf", "collar", "earing"],
+        "accessories": ["scarf", "collar", "earing", "wrist_guards"],  # v0.3.35: 新增护腕
     },
     "archer": {
         "name": "弓箭手", "head_ratio": 0.19, "body_w": 0.25,
@@ -124,7 +125,7 @@ CHAR_TYPES = {
         "body_ratio": 0.92,  # 精瘦身体
         "leg_ratio": 1.10,   # 长腿（灵活）
         "arm_ratio": 1.15,   # 长臂（拉弓）
-        "accessories": ["belt", "belt_pouch", "scarf", "earing"],
+        "accessories": ["belt", "belt_pouch", "scarf", "earing", "wrist_guards"],  # v0.3.35: 新增护腕
     },
     "rogue": {
         "name": "盗贼", "head_ratio": 0.17, "body_w": 0.22,
@@ -133,10 +134,10 @@ CHAR_TYPES = {
         "body_ratio": 0.85,  # 窄小身材
         "leg_ratio": 1.10,   # 灵活长腿
         "arm_ratio": 1.05,   # 匀称手臂
-        "accessories": ["belt", "earing", "scarf", "belt_pouch"],
+        "accessories": ["belt", "earing", "scarf", "belt_pouch", "wrist_guards"],  # v0.3.35: 新增护腕
     },
     "healer": {
-        "name": "治疗师", "head_ratio": 0.20, "body_w": 0.30,
+        "name": "治疗师", "head_ratio": 0.22, "body_w": 0.30,  # v0.3.35: 增大头部(0.20→0.22)配合柔和气质
         "has_wings": False, "weapon": "book",
         "face_type": "gentle",
         "body_ratio": 0.95,  # 正常体型
@@ -164,17 +165,17 @@ CHAR_TYPES = {
     },
     # v0.3.17: 新增骑士 — 重甲坦克型角色
     "knight": {
-        "name": "骑士", "head_ratio": 0.17, "body_w": 0.38,
+        "name": "骑士", "head_ratio": 0.15, "body_w": 0.38,  # v0.3.35: 缩小头部(0.17→0.15)配合最宽壮体型，全头盔更包裹
         "has_helmet": True, "weapon": "sword",
         "face_type": "serious",
         "body_ratio": 1.25,  # 最宽壮躯干
         "leg_ratio": 0.85,   # 短粗稳固腿
         "arm_ratio": 1.15,   # 强壮手臂
-        "accessories": ["belt", "shoulder_pads", "collar", "belt_pouch"],
+        "accessories": ["belt", "shoulder_pads", "collar", "belt_pouch", "wrist_guards"],  # v0.3.35: 新增护腕
     },
     # v0.3.17: 新增吟游诗人 — 轻巧辅助型角色
     "bard": {
-        "name": "吟游诗人", "head_ratio": 0.20, "body_w": 0.24,
+        "name": "吟游诗人", "head_ratio": 0.21, "body_w": 0.24,  # v0.3.35: 略增头部(0.20→0.21)配合艺术气质
         "has_hat": True, "weapon": "lute",
         "face_type": "gentle",
         "body_ratio": 0.88,  # 纤细身材
@@ -2418,6 +2419,45 @@ class CharacterEngine:
                 for x in range(max(0, cx - body_draw_w//2 - 1), min(W, cx + body_draw_w//2 + 1)):
                     if 0 <= collar_y < H:
                         canvas[collar_y][x] = collar_color
+
+            elif acc == "wrist_guards":
+                # v0.3.35: 护腕 — 手腕处的环形装饰带，增加战斗类角色的武装感
+                # 护腕绘制在手臂末端附近（手部上方），使用accent色+金属扣
+                guard_h = max(ps, 2)  # 护腕高度
+                guard_color = (*accent_dark, 255)
+                guard_highlight = (*accent_light, 255)
+                ladx = pose.get("left_arm_dx", 0)
+                lady = pose.get("left_arm_dy", 0)
+                radx2 = pose.get("right_arm_dx", 0)
+                rady2 = pose.get("right_arm_dy", 0)
+                # 左臂护腕（手臂中间偏下位置）
+                lg_x = cx - body_w//2 - arm_w + ladx
+                lg_y = body_top + arm_h * 2 // 3 + lady
+                for dy2 in range(guard_h):
+                    gy = lg_y + dy2
+                    for dx2 in range(arm_w + ps):
+                        gx = lg_x + dx2
+                        if 0 <= gx < W and 0 <= gy < H:
+                            canvas[gy][gx] = guard_color
+                # 左臂护腕金属扣（中心亮点）
+                buckle_x = lg_x + arm_w // 2
+                buckle_y = lg_y + guard_h // 2
+                if 0 <= buckle_x < W and 0 <= buckle_y < H:
+                    canvas[buckle_y][buckle_x] = guard_highlight
+                # 右臂护腕
+                rg_x = cx + body_w//2 + radx2
+                rg_y = body_top + arm_h * 2 // 3 + rady2
+                for dy2 in range(guard_h):
+                    gy = rg_y + dy2
+                    for dx2 in range(arm_w + ps):
+                        gx = rg_x + dx2
+                        if 0 <= gx < W and 0 <= gy < H:
+                            canvas[gy][gx] = guard_color
+                # 右臂护腕金属扣
+                buckle_x2 = rg_x + arm_w // 2
+                buckle_y2 = rg_y + guard_h // 2
+                if 0 <= buckle_x2 < W and 0 <= buckle_y2 < H:
+                    canvas[buckle_y2][buckle_x2] = guard_highlight
 
         # ---- 武器（v0.3.6: 跟随右臂偏移 + weapon_angle旋转） ----
         weapon = type_cfg.get("weapon", "none")
