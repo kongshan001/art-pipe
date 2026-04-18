@@ -2669,41 +2669,97 @@ class CharacterEngine:
         # ---- v0.3.9: 随机配件渲染 ----
         for acc in chosen_acc:
             if acc == "belt":
-                # 腰带：身体中部的横向条纹（accent色+金属扣）
+                # v0.3.41: 腰带金属扣渲染（Metallic Buckle）— 模拟黄铜/钢铁扣环的金属反射
+                # 原理：真实腰带扣是弧形金属片，光照时中心有明亮锐利的镜面反射点，
+                #       边缘因弧面弯曲过渡到暗色。金属扣与布料腰带的视觉对比
+                #       是区分"装备"与"衣物"的关键视觉线索。
+                # 实现：腰带带身用accent_dark，扣环外框用accent，内部用accent_light，
+                #       中心1px添加暖白镜面点(max+40,+30,+20)模拟金属锐反射。
                 belt_y = body_top + body_h * 2 // 3
                 for x in range(max(0, cx - body_draw_w//2 - 1), min(W, cx + body_draw_w//2 + 1)):
                     for dy2 in range(max(0, ps)):
                         by = belt_y + dy2
                         if 0 <= by < H:
                             canvas[by][x] = (*accent_dark, 255)
-                # 腰带金属扣（中心亮点）
+                # 腰带金属扣 — 外框
+                buckle_w = max(ps + 1, 3)
+                buckle_h = max(ps, 2)
                 buckle_y = belt_y
-                for dy2 in range(ps):
-                    for dx2 in range(-ps, ps+1):
+                for dy2 in range(buckle_h):
+                    for dx2 in range(-buckle_w, buckle_w + 1):
                         bx = cx + dx2
                         bby = buckle_y + dy2
                         if 0 <= bx < W and 0 <= bby < H:
-                            canvas[bby][bx] = (*accent_light, 255)
+                            # 扣环边缘（外1px用accent色，模拟弧面暗边）
+                            if abs(dx2) >= buckle_w - 1 or dy2 == 0 or dy2 == buckle_h - 1:
+                                canvas[bby][bx] = (*accent, 255)
+                            else:
+                                canvas[bby][bx] = (*accent_light, 255)
+                # 扣环中心镜面高光点（金属锐反射）
+                if buckle_h >= 2:
+                    _sp_y = buckle_y + buckle_h // 2
+                    _sp_x = cx - 1  # 偏左（受光侧），与全局光源方向一致
+                    if 0 <= _sp_y < H and 0 <= _sp_x < W:
+                        canvas[_sp_y][_sp_x] = (
+                            min(255, accent_light[0] + 40),
+                            min(255, accent_light[1] + 30),
+                            min(255, accent_light[2] + 20), 255)
 
             elif acc == "shoulder_pads":
-                # 肩甲：肩膀两侧的方形护甲片
+                # v0.3.41: 肩甲金属高光（Metallic Specular）— 模拟弧形金属板的法线高光反射
+                # 原理：金属表面的高光比布料更锐利、更亮，且有明显的明暗分界线。
+                #       护甲肩片通常是弧面，光照时形成经典的"金属高光带"：
+                #       受光侧（左上）有窄而亮的镜面反射带，背光侧（右下）快速过渡到暗色。
+                #       与布料的v0.3.29 Clothing Specular Band不同：金属高光更窄更亮更锐利。
+                # 实现：将肩甲分为4个渐变区域（高光带/亮面/中间面/暗面），
+                #       用对角线位置(normal_t)决定颜色，模拟弧面法线变化。
+                #       额外在高光带中心画1px白色镜面点模拟金属锐反射。
                 pad_w = max(ps*2, arm_w)
                 pad_h = max(ps*2, body_h // 5)
                 pad_y = body_top
+                # 金属高光色阶（比布料的高光更亮更暖）
+                _metal_bright = (min(255, accent_light[0] + 18), min(255, accent_light[1] + 12), min(255, accent_light[2] + 5))  # 金属亮面
+                _metal_dark = (max(0, accent_dark[0] - 10), max(0, accent_dark[1] - 8), max(0, accent_dark[2] - 5))  # 金属暗面
                 # 左肩甲
                 for y in range(pad_y, min(H, pad_y + pad_h)):
                     for x in range(max(0, cx - body_draw_w//2 - pad_w), min(W, cx - body_draw_w//2)):
-                        canvas[y][x] = (*accent, 255)
-                        # 肩甲内高光
-                        if (x - (cx - body_draw_w//2 - pad_w)) < ps and (y - pad_y) < ps:
+                        # 计算该像素在肩甲上的归一化位置 (0~1, 0~1)
+                        _px_t = (y - pad_y) / max(1, pad_h - 1)  # 纵向: 0=顶 1=底
+                        _py_t = (x - (cx - body_draw_w//2 - pad_w)) / max(1, pad_w - 1)  # 横向: 0=左 1=右
+                        # 法线方向模拟：对角线梯度（左上亮，右下暗），模拟左上方光源
+                        _normal_t = (_px_t + (1.0 - _py_t)) / 2.0  # 0=最亮(左上) 1=最暗(右下)
+                        if _normal_t < 0.25:
+                            # 高光带：窄而亮的镜面反射区域
+                            canvas[y][x] = (*_metal_bright, 255)
+                            # 高光带中心的锐反射点（最亮1px，模拟金属锐高光）
+                            if _normal_t < 0.12:
+                                canvas[y][x] = (min(255, _metal_bright[0] + 25), min(255, _metal_bright[1] + 20), min(255, _metal_bright[2] + 15), 255)
+                        elif _normal_t < 0.45:
+                            # 亮面
                             canvas[y][x] = (*accent_light, 255)
-                # 右肩甲
+                        elif _normal_t < 0.7:
+                            # 中间面
+                            canvas[y][x] = (*accent, 255)
+                        else:
+                            # 暗面
+                            canvas[y][x] = (*_metal_dark, 255)
+                # 右肩甲（镜像：右上亮，左下暗）
                 for y in range(pad_y, min(H, pad_y + pad_h)):
                     for x in range(max(0, cx + body_draw_w//2), min(W, cx + body_draw_w//2 + pad_w)):
-                        canvas[y][x] = (*accent, 255)
-                        # 肩甲内高光
-                        if (cx + body_draw_w//2 + pad_w - x) < ps and (y - pad_y) < ps:
+                        _px_t = (y - pad_y) / max(1, pad_h - 1)
+                        _py_t = (x - (cx + body_draw_w//2)) / max(1, pad_w - 1)
+                        # 右肩：右上亮，左下暗（光源从左上方照射）
+                        _normal_t = (_px_t + _py_t) / 2.0
+                        if _normal_t < 0.25:
+                            canvas[y][x] = (*_metal_bright, 255)
+                            if _normal_t < 0.12:
+                                canvas[y][x] = (min(255, _metal_bright[0] + 25), min(255, _metal_bright[1] + 20), min(255, _metal_bright[2] + 15), 255)
+                        elif _normal_t < 0.45:
                             canvas[y][x] = (*accent_light, 255)
+                        elif _normal_t < 0.7:
+                            canvas[y][x] = (*accent, 255)
+                        else:
+                            canvas[y][x] = (*_metal_dark, 255)
 
             elif acc == "scarf":
                 # 围巾：脖子处的飘逸带状物，轻微随风飘动
