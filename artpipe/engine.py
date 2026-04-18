@@ -1586,6 +1586,8 @@ class CharacterEngine:
 
             elif hair_style == "medium":
                 # 中发：覆盖头顶+两侧到耳朵位置
+                # v0.3.48: 次级运动 — 两侧延伸头发随body_dx反向延迟摆动
+                _hair_sway = -body_dx if body_dx != 0 else 0
                 for y in range(max(0, head_cy - head_r - ps), head_cy + head_r//4):
                     for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
                         dx, dy = x - cx, y - head_cy
@@ -1594,9 +1596,13 @@ class CharacterEngine:
                         hair_ry = head_r + ps
                         if dx*dx + (dy+ps)*(dy+ps) <= hair_rx*hair_ry and dy < 0:
                             canvas[y][x] = (*hair_color, 255)
-                        # 两侧延伸
+                        # 两侧延伸（v0.3.48: 受hair_sway影响，运动时偏移）
                         elif abs(dy) <= head_r//3 and abs(dx) >= head_r - ps and abs(dx) <= head_r + ps:
-                            canvas[y][x] = (*hair_dark, 255)
+                            sway_x = x + _hair_sway
+                            if 0 <= sway_x < W and 0 <= y < H and canvas[y][sway_x][3] == 0:
+                                canvas[y][sway_x] = (*hair_dark, 255)
+                            elif 0 <= x < W:
+                                canvas[y][x] = (*hair_dark, 255)
                 # 顶部高光弧线
                 hl_y = max(0, head_cy - head_r - ps + 1)
                 for x in range(max(0, cx - head_r//2), min(W, cx + head_r//2)):
@@ -1607,6 +1613,8 @@ class CharacterEngine:
 
             elif hair_style == "long":
                 # 长发：覆盖头顶+延伸到肩部背后
+                # v0.3.48: 次级运动 — 长发两侧垂发随body_dx反向延迟摆动（跟随通过原则）
+                _hair_sway = -body_dx if body_dx != 0 else 0
                 # 头顶部分
                 for y in range(max(0, head_cy - head_r - ps), head_cy + head_r//3):
                     for x in range(max(0, cx - head_r - ps*2), min(W, cx + head_r + ps*2)):
@@ -1615,17 +1623,17 @@ class CharacterEngine:
                         hair_ry = head_r + ps
                         if dx*dx + (dy+ps)*(dy+ps) <= hair_rx*hair_ry and dy < 0:
                             canvas[y][x] = (*hair_color, 255)
-                # 两侧长发垂下到肩部
+                # 两侧长发垂下到肩部（v0.3.48: 受hair_sway偏移）
                 hair_drop_top = head_cy
                 hair_drop_bot = min(H, body_top + body_h // 3)
                 for y in range(hair_drop_top, hair_drop_bot):
-                    # 左侧
-                    for x in range(max(0, cx - head_r - ps*2), max(0, cx - head_r + ps)):
-                        if 0 <= x < W:
+                    # 左侧（v0.3.48: 加sway偏移）
+                    for x in range(max(0, cx - head_r - ps*2 + _hair_sway), max(0, cx - head_r + ps + _hair_sway)):
+                        if 0 <= x < W and canvas[y][x][3] == 0:
                             canvas[y][x] = (*hair_dark, 255)
-                    # 右侧
-                    for x in range(min(W, cx + head_r - ps), min(W, cx + head_r + ps*2)):
-                        if 0 <= x < W:
+                    # 右侧（v0.3.48: 加sway偏移）
+                    for x in range(min(W, cx + head_r - ps + _hair_sway), min(W, cx + head_r + ps*2 + _hair_sway)):
+                        if 0 <= x < W and canvas[y][x][3] == 0:
                             canvas[y][x] = (*hair_dark, 255)
                 # 顶部高光
                 hl_y = max(0, head_cy - head_r - ps + 1)
@@ -1637,6 +1645,8 @@ class CharacterEngine:
 
             elif hair_style == "spiky":
                 # 刺猬头：多个三角尖刺从头顶伸出
+                # v0.3.48: 次级运动 — 尖刺尖端受body_dx反向偏移（惯性跟随）
+                _spike_sway = -body_dx if body_dx != 0 else 0
                 num_spikes = 5
                 spike_base_y = head_cy - head_r + ps
                 for i in range(num_spikes):
@@ -1644,18 +1654,22 @@ class CharacterEngine:
                     spike_x = cx - head_r + int((i + 0.5) * (2 * head_r) / num_spikes)
                     spike_h = head_r // 2 + (i % 2) * (head_r // 3)  # 交替高低
                     spike_w = max(ps, 2)
-                    # 画三角形尖刺
+                    # 画三角形尖刺（v0.3.48: 顶部偏移更大）
                     for dy in range(spike_h):
+                        # v0.3.48: 尖刺越高sway越大（距离加权）
+                        _spike_dist = min(1.0, dy / max(1, spike_h * 0.5))
+                        _spike_dx = int(_spike_sway * _spike_dist)
                         tip_y = spike_base_y - spike_h + dy
                         half_w = max(1, (spike_h - dy) * spike_w // spike_h)
                         for dx in range(-half_w, half_w + 1):
-                            px = spike_x + dx
+                            px = spike_x + dx + _spike_dx
                             if 0 <= tip_y < H and 0 <= px < W:
                                 canvas[tip_y][px] = (*hair_color, 255)
                     # 尖端高光
                     tip_y = spike_base_y - spike_h
-                    if 0 <= tip_y < H and 0 <= spike_x < W:
-                        canvas[tip_y][spike_x] = (*hair_light, 255)
+                    tip_x_final = spike_x + int(_spike_sway * 1.0)
+                    if 0 <= tip_y < H and 0 <= tip_x_final < W:
+                        canvas[tip_y][tip_x_final] = (*hair_light, 255)
                 # 底部连接层（头顶填充）
                 for y in range(max(0, head_cy - head_r - ps), spike_base_y):
                     for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
@@ -1665,6 +1679,8 @@ class CharacterEngine:
 
             elif hair_style == "ponytail":
                 # 马尾：头顶覆盖 + 一根辫子垂到背后
+                # v0.3.48: 次级运动 — 马尾辫受body_dx反向延迟摆动（跟随通过原则）
+                _tail_sway = -body_dx if body_dx != 0 else 0
                 # 头顶部分（类似medium）
                 for y in range(max(0, head_cy - head_r - ps), head_cy):
                     for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
@@ -1672,19 +1688,23 @@ class CharacterEngine:
                         if dx*dx + (dy+ps)*(dy+ps) <= (head_r+ps)*(head_r+ps) and dy < -head_r//3:
                             canvas[y][x] = (*hair_color, 255)
                 # 马尾辫：从头顶右侧偏后延伸向下，带轻微波浪
+                # v0.3.48: 增加tail_sway次级运动偏移
                 tail_start_x = cx + head_r // 2
                 tail_start_y = head_cy - head_r + ps
                 tail_len = min(H - tail_start_y, body_h + leg_h // 2)
                 for dy in range(tail_len):
                     wave = int(math.sin(dy * 0.15 + frame_idx * 0.2) * ps)
+                    # v0.3.48: 次级运动 — 越靠近辫尾，sway影响越大（距离加权）
+                    _tail_dist_factor = min(1.0, dy / max(1, tail_len * 0.3))
+                    _tail_offset = int(_tail_sway * _tail_dist_factor)
                     ty = tail_start_y + dy
                     for dx in range(-ps, ps + 1):
-                        tx = tail_start_x + wave + dx
+                        tx = tail_start_x + wave + _tail_offset + dx
                         if 0 <= ty < H and 0 <= tx < W:
                             canvas[ty][tx] = (*hair_dark, 255)
                     # 马尾高光线
-                    if 0 <= ty < H and 0 <= tail_start_x + wave < W:
-                        canvas[ty][tail_start_x + wave] = (*hair_light, 255)
+                    if 0 <= ty < H and 0 <= tail_start_x + wave + _tail_offset < W:
+                        canvas[ty][tail_start_x + wave + _tail_offset] = (*hair_light, 255)
                 # 头顶高光
                 hl_y = max(0, head_cy - head_r - ps + 1)
                 for x in range(max(0, cx - head_r//3), min(W, cx + head_r//3)):
@@ -2955,6 +2975,7 @@ class CharacterEngine:
             elif acc == "cloak":
                 # v0.3.39: 斗篷 — 从肩部两侧垂落的宽松外袍，增强角色戏剧感
                 # 设计：比cape更宽，两侧对称，从肩部延伸到膝盖，带波浪褶皱
+                # v0.3.48: 斗篷物理次级运动 — 运动时斗篷反向飘动，模拟空气阻力
                 cloak_color = (*accent_dark, 255)
                 cloak_highlight = (
                     min(255, accent_dark[0] + 18),
@@ -2967,12 +2988,17 @@ class CharacterEngine:
                 cloak_w = max(ps * 2, arm_w + ps)  # 斗篷宽度略宽于手臂
                 cloak_top = body_top - ps  # 从肩部开始
                 cloak_bot = min(H, body_bot + leg_h // 2)  # 延伸到膝盖
+                # v0.3.48: 斗篷风力偏移 — body_dx反方向（惯性），越往下越大
+                _cloak_wind = -body_dx if body_dx != 0 else 0
                 # 左侧斗篷（身体左侧外沿）
                 for y in range(max(0, cloak_top), cloak_bot):
-                    # 波浪褶皱效果：宽度随y轴正弦波动
-                    wave = int(math.sin((y - cloak_top) * 0.25 + seed * 0.1) * ps)
-                    left_x = max(0, cx - body_w // 2 - cloak_w + wave)
-                    right_x = max(0, cx - body_w // 2 - ps // 2 + wave)
+                    # v0.3.48: 斗篷底部受风力更大（距离加权）
+                    _cloak_dist = min(1.0, (y - cloak_top) / max(1, cloak_bot - cloak_top))
+                    _cloak_sway = int(_cloak_wind * _cloak_dist * 1.5)
+                    # 波浪褶皱效果：宽度随y轴正弦波动（v0.3.48: 加入frame_idx动态飘动）
+                    wave = int(math.sin((y - cloak_top) * 0.25 + seed * 0.1 + frame_idx * 0.15) * ps)
+                    left_x = max(0, cx - body_w // 2 - cloak_w + wave + _cloak_sway)
+                    right_x = max(0, cx - body_w // 2 - ps // 2 + wave + _cloak_sway)
                     for x in range(left_x, min(W, right_x)):
                         if 0 <= x < W and 0 <= y < H and canvas[y][x][3] == 0:
                             # 渐变着色：中心亮，边缘暗
@@ -2986,9 +3012,11 @@ class CharacterEngine:
                                 canvas[y][x] = cloak_color
                 # 右侧斗篷（身体右侧外沿）
                 for y in range(max(0, cloak_top), cloak_bot):
-                    wave = int(math.sin((y - cloak_top) * 0.25 + seed * 0.1 + 1.5) * ps)
-                    left_x2 = min(W, cx + body_w // 2 + ps // 2 + wave)
-                    right_x2 = min(W, cx + body_w // 2 + cloak_w + wave)
+                    _cloak_dist = min(1.0, (y - cloak_top) / max(1, cloak_bot - cloak_top))
+                    _cloak_sway = int(_cloak_wind * _cloak_dist * 1.5)
+                    wave = int(math.sin((y - cloak_top) * 0.25 + seed * 0.1 + 1.5 + frame_idx * 0.15) * ps)
+                    left_x2 = min(W, cx + body_w // 2 + ps // 2 + wave + _cloak_sway)
+                    right_x2 = min(W, cx + body_w // 2 + cloak_w + wave + _cloak_sway)
                     for x in range(max(0, left_x2), min(W, right_x2)):
                         if 0 <= x < W and 0 <= y < H and canvas[y][x][3] == 0:
                             dist_from_edge = right_x2 - x
