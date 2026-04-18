@@ -1894,6 +1894,55 @@ class CharacterEngine:
                         _sp[3]
                     )
         
+        # ---- v0.3.59: 动漫发型高光带(Anime Highlight Bands) — 对角线状亮带模拟动漫反光 ----
+        # 原理：在动漫/游戏角色插图中，头发常有斜向的亮色带状高光（俗称"丝带高光"），
+        #       这是光源从斜上方照射头发时，光滑发丝表面形成的镜面反射带。
+        #       参考：Pixiv/wiki教科书风格"アニメ塗り"(anime cel shading)技法——
+        #       先平涂底色→画暗面→画斜高光带→点缀最亮锐利高光。
+        #       在像素美术中，用2-3px宽的对角线亮带即可暗示这个效果，
+        #       让头发从"素色色块"变成"有光泽的动漫发型"，辨识度大幅提升。
+        # 实现：基于(x+y)的对角线周期，在受光侧(左上)生成周期性亮带，
+        #       带宽由head_r缩放，强度随受光方向衰减，与v0.3.39竖条纹正交互补。
+        if hair_style != "bald":
+            _hl_period = max(4, head_r)       # 对角线亮带周期(像素)
+            _hl_width = max(1, head_r // 6)   # 亮带宽度(像素)
+            _hl_offset = int(-cx * 0.3)       # 相对角色中心偏移，保证对称
+            for y in range(_hgy0, _hgy1):
+                for x in range(_hgx0, _hgx1):
+                    _bp = canvas[y][x]
+                    if _bp[3] == 0:
+                        continue
+                    # 识别头发像素
+                    _is_hb = False
+                    for _hc in (hair_color, hair_dark, hair_light):
+                        if (abs(int(_bp[0]) - _hc[0]) + abs(int(_bp[1]) - _hc[1]) + abs(int(_bp[2]) - _hc[2])) < 70:
+                            _is_hb = True
+                            break
+                    if not _is_hb:
+                        continue
+                    # 对角线位置：斜向带状，沿(x+y)方向分布
+                    _diag_pos = (x + y + _hl_offset) % _hl_period
+                    # 仅在受光侧(左上方)产生高光带，背光侧跳过
+                    _hside = (x - cx) / max(1, head_r + ps)
+                    _vside = (y - head_cy) / max(1, head_r + ps)
+                    if _hside > 0.15 and _vside > 0:
+                        continue  # 右下方(背光侧)不画高光带
+                    # 高光带强度：受光侧最强，渐向背光侧衰减
+                    _hl_strength = 1.0
+                    if _hside > -0.1:
+                        _hl_strength = max(0.0, 0.5 - _hside)
+                    if _vside > -0.3:
+                        _hl_strength *= max(0.0, 1.0 - _vside * 1.5)
+                    # 判断当前像素是否在高光带内
+                    if _diag_pos < _hl_width and _hl_strength > 0.1:
+                        _hl_boost = int(20 * _hl_strength)
+                        canvas[y][x] = (
+                            min(255, max(0, int(_bp[0]) + _hl_boost + 5)),
+                            min(255, max(0, int(_bp[1]) + _hl_boost + 3)),
+                            min(255, max(0, int(_bp[2]) + _hl_boost)),
+                            _bp[3]
+                        )
+        
         # ---- v0.3.37: 发际线轮廓高光(Rim Light) ----
         # 原理：在像素美术中，rim light（边缘光/轮廓光）是专业技法：
         #   - 在物体外轮廓添加一条亮线，模拟背光照射效果
@@ -4414,6 +4463,59 @@ class CharacterEngine:
                     min(255, max(0, g + sss_g)),
                     min(255, max(0, b + sss_b)),
                     a
+                )
+
+        # ---- v0.3.60: 色温偏移着色(Warm-Shadow / Cool-Highlight Tinting) — 增强色彩深度 ----
+        # 原理：真实光照中，阴影区域因环境光散射呈冷蓝色调（蓝天散射光），
+        #       高光区域因主光源照射呈暖黄/橙色调（阳光或暖色灯光）。
+        #       这是印象派画家(Monet, Renior)的经典发现，也是专业像素美术色彩理论的核心：
+        #       "暗面偏冷，亮面偏暖"（或反之）的色彩互补策略，能大幅提升画面层次感。
+        #       参考：Lospec像素教程"Color theory for pixel art"(2024)——
+        #       "Shift your hue as well as your value: warm highlights + cool shadows = instant depth"。
+        #       单纯调整明度（加深/提亮）会产生"灰色泥巴"效果，而色相偏移让暗面保持饱和，
+        #       每个色阶都有独特的色温特征，视觉更丰富。
+        # 实现：扫描所有不透明像素，根据亮度判断偏移方向：
+        #       暗像素→向暖色偏移（+R, -B, 微调色相），亮像素→向冷色偏移（+B, -R）。
+        #       偏移量很小（±5），避免干扰已建立的色彩和谐，仅增加微妙的色温对比。
+        #       跳过纯黑/纯白像素（瞳孔/高光），仅影响中间调肤色和服装色。
+        _skin_ref = palette[0]
+        _skin_thr_sq = 90 * 90  # 皮肤色检测阈值平方
+        for y in range(H):
+            for x in range(W):
+                _tp = canvas[y][x]
+                if _tp[3] == 0:
+                    continue
+                _tr, _tg, _tb = int(_tp[0]), int(_tp[1]), int(_tp[2])
+                _tlum = (_tr * 2 + _tg * 5 + _tb) // 8  # 加权亮度近似(luma)
+                # 跳过极端亮度像素
+                if _tlum < 20 or _tlum > 240:
+                    continue
+                # 检测是否为皮肤色（与palette[0]近似）
+                _tdr, _tdg, _tdb = _tr - _skin_ref[0], _tg - _skin_ref[1], _tb - _skin_ref[2]
+                _tdist_sq = _tdr*_tdr + _tdg*_tdg + _tdb*_tdb
+                if _tdist_sq > _skin_thr_sq:
+                    continue  # 非皮肤色跳过（服装色不做色温偏移，保持原始和谐）
+                # 根据亮度决定色温偏移方向
+                # 暗部(lum < 120): 暖偏移（+R, +G微, -B）→ 偏橙
+                # 亮部(lum > 160): 冷偏移（-R微, +B）→ 偏蓝
+                # 中间调(120-160): 不偏移（保持原有平衡）
+                if _tlum < 120:
+                    _warm_f = (120 - _tlum) / 120.0  # 0→1，越暗越暖
+                    _tshift_r = int(5 * _warm_f)
+                    _tshift_g = int(2 * _warm_f)
+                    _tshift_b = -int(4 * _warm_f)
+                elif _tlum > 160:
+                    _cool_f = (_tlum - 160) / 80.0  # 0→1，越亮越冷
+                    _tshift_r = -int(3 * _cool_f)
+                    _tshift_g = 0
+                    _tshift_b = int(4 * _cool_f)
+                else:
+                    continue  # 中间调不偏移
+                canvas[y][x] = (
+                    min(255, max(0, _tr + _tshift_r)),
+                    min(255, max(0, _tg + _tshift_g)),
+                    min(255, max(0, _tb + _tshift_b)),
+                    _tp[3]
                 )
 
         # ---- v0.3.46: 选择性眼睛发光（Selective Eye Glow）— Hollow Knight/Ori风格的锐利眼神光 ----
