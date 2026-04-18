@@ -2313,28 +2313,117 @@ class CharacterEngine:
             else:
                 return body_dark
         
-        # 左腿（带偏移 + Bayer抖动渐变：顶部受光偏亮，底部阴影偏暗）
+        # ---- v0.3.54: 腿部轮廓塑形(Leg Contour Taper) — 大腿→膝盖→脚踝锥形 ----
+        # 原理：真实腿部轮廓从大腿（较宽，连接髋部）→膝盖（收窄）→小腿中部（略宽）→脚踝（最窄）。
+        #       当前腿部是纯矩形，与身体v0.3.28的smoothstep轮廓塑形形成品质落差。
+        #       像素美术中，腿部锥形是"自然感"的关键要素：矩形腿看起来像"柱子"，
+        #       而锥形腿看起来像"有肌肉结构的肢体"。
+        # 实现：使用与身体相同的Hermite smoothstep插值，分3区：
+        #       0~40%(大腿): 保持全宽1.0（连接髋部需要完整宽度）
+        #       40~70%(膝盖区): smoothstep收窄到0.75（膝盖处最细）
+        #       70~100%(小腿→脚踝): 平滑回升到0.88（小腿肌肉）再微收到0.82（脚踝）
+        _leg_taper_thigh = 1.0     # 大腿宽度比例
+        _leg_taper_knee = 0.75     # 膝盖宽度比例（最窄）
+        _leg_taper_calf = 0.88     # 小腿宽度比例
+        _leg_taper_ankle = 0.82    # 脚踝宽度比例
+
+        def _leg_contour_hw(leg_t, base_w):
+            """根据纵向位置leg_t(0=顶,1=底)计算腿部半宽度"""
+            if leg_t < 0.40:
+                # 大腿区：保持全宽
+                ratio = _leg_taper_thigh
+            elif leg_t < 0.70:
+                # 大腿→膝盖收窄：smoothstep过渡
+                t = (leg_t - 0.40) / 0.30  # 0→1
+                t = t * t * (3 - 2 * t)  # Hermite smoothstep
+                ratio = _leg_taper_thigh + (_leg_taper_knee - _leg_taper_thigh) * t
+            elif leg_t < 0.85:
+                # 膝盖→小腿：微回升（小腿肌肉隆起）
+                t = (leg_t - 0.70) / 0.15
+                t = t * t * (3 - 2 * t)
+                ratio = _leg_taper_knee + (_leg_taper_calf - _leg_taper_knee) * t
+            else:
+                # 小腿→脚踝：微收（脚踝是最细的部分）
+                t = (leg_t - 0.85) / 0.15
+                t = t * t * (3 - 2 * t)
+                ratio = _leg_taper_calf + (_leg_taper_ankle - _leg_taper_calf) * t
+            return max(1, int(base_w / 2 * ratio))
+
+        # 左腿（带偏移 + Bayer抖动渐变 + v0.3.54轮廓塑形）
         ldx, ldy = pose["left_leg_dx"], pose["left_leg_dy"]
         _lleg_x0 = cx - body_w//2 + ldx
+        _lleg_cx = _lleg_x0 + leg_w // 2  # 左腿中心X
         for y in range(leg_top + ldy, min(H, leg_top + ldy + leg_h)):
             leg_t = (y - leg_top - ldy) / max(1, leg_h - 1)  # 0=顶 1=底
             _ly = y - (leg_top + ldy)  # 腿部局部Y坐标
-            for x in range(max(0, _lleg_x0), min(W, _lleg_x0 + leg_w)):
+            # v0.3.54: 使用轮廓塑形计算实际渲染宽度
+            _leg_hw = _leg_contour_hw(leg_t, leg_w)
+            for x in range(max(0, _lleg_cx - _leg_hw), min(W, _lleg_cx + _leg_hw)):
                 if 0 <= y < H:
                     _lx = x - _lleg_x0  # 腿部局部X坐标
                     leg_c = _leg_color_at(leg_t, _ly, _lx)
                     canvas[y][x] = (*leg_c, 255)
-        # 右腿（带偏移 + Bayer抖动渐变）
+        # 右腿（带偏移 + Bayer抖动渐变 + v0.3.54轮廓塑形）
         rdx, rdy = pose["right_leg_dx"], pose["right_leg_dy"]
         _rleg_x0 = cx + body_w//2 - leg_w + rdx
+        _rleg_cx = _rleg_x0 + leg_w // 2  # 右腿中心X
         for y in range(leg_top + rdy, min(H, leg_top + rdy + leg_h)):
             leg_t = (y - leg_top - rdy) / max(1, leg_h - 1)  # 0=顶 1=底
             _ly = y - (leg_top + rdy)  # 腿部局部Y坐标
-            for x in range(max(0, _rleg_x0), min(W, _rleg_x0 + leg_w)):
+            # v0.3.54: 使用轮廓塑形计算实际渲染宽度
+            _leg_hw = _leg_contour_hw(leg_t, leg_w)
+            for x in range(max(0, _rleg_cx - _leg_hw), min(W, _rleg_cx + _leg_hw)):
                 if 0 <= y < H:
                     _lx = x - _rleg_x0  # 腿部局部X坐标
                     leg_c = _leg_color_at(leg_t, _ly, _lx)
                     canvas[y][x] = (*leg_c, 255)
+
+        # ---- v0.3.54: 膝盖关节细节(Knee Joint Detail) — 膝盖位置微暗线+高光 ----
+        # 原理：与v0.3.50领口分色线、v0.3.39袖口分色线统一设计语言：
+        #       在肢体关节处添加1px微暗线暗示骨骼/关节结构。
+        #       真实膝盖在弯曲时有明显的髌骨凸起和后方腘窝凹陷，
+        #       像素美术用一条微暗线+上方微高光模拟此结构。
+        # 实现：在腿部42%位置（膝盖高度）：
+        #       - 膝盖线：1px水平暗线，受光侧+4亮度补偿
+        #       - 膝盖上缘：1px微亮线 body_color+5，暗示髌骨凸起反射
+        #       使用canvas已有的腿部像素（仅修改不透明像素），不绘制到透明区域
+        _knee_t = 0.42  # 膝盖位置（腿部42%处）
+        for _ks in ("left", "right"):
+            if _ks == "left":
+                _ks_dx, _ks_dy = ldx, ldy
+                _ks_cx = _lleg_cx
+            else:
+                _ks_dx, _ks_dy = rdx, rdy
+                _ks_cx = _rleg_cx
+            # 计算膝盖Y位置
+            _knee_y = leg_top + _ks_dy + int(leg_h * _knee_t)
+            if 0 <= _knee_y < H and 0 <= _knee_y - 1 < H:
+                _knee_hw = _leg_contour_hw(_knee_t, leg_w)
+                # 膝盖上缘微高光（暗示髌骨凸起反射）
+                _knee_hi_y = _knee_y - 1
+                for _kx in range(max(0, _ks_cx - _knee_hw + 1), min(W, _ks_cx + _knee_hw - 1)):
+                    _kp = canvas[_knee_hi_y][_kx]
+                    if _kp[3] > 0:
+                        # 微亮：受光侧(左)更亮+7，背光侧(右)微亮+3
+                        _k_bright = 7 if _kx < _ks_cx else 3
+                        canvas[_knee_hi_y][_kx] = (
+                            min(255, int(_kp[0]) + _k_bright),
+                            min(255, int(_kp[1]) + _k_bright),
+                            min(255, int(_kp[2]) + _k_bright),
+                            _kp[3]
+                        )
+                # 膝盖线（微暗，暗示关节凹陷）
+                for _kx in range(max(0, _ks_cx - _knee_hw + 1), min(W, _ks_cx + _knee_hw - 1)):
+                    _kp = canvas[_knee_y][_kx]
+                    if _kp[3] > 0:
+                        # 受光侧补偿+4（左侧亮，有光泽感），背光侧更深-2
+                        _k_dark = -10 if _kx < _ks_cx else -14
+                        canvas[_knee_y][_kx] = (
+                            max(0, min(255, int(_kp[0]) + _k_dark + (4 if _kx < _ks_cx else 0))),
+                            max(0, min(255, int(_kp[1]) + _k_dark + (2 if _kx < _ks_cx else 0))),
+                            max(0, min(255, int(_kp[2]) + _k_dark)),
+                            _kp[3]
+                        )
         
         # ---- v0.3.27: 按类型鞋子渲染 — 独特鞋型+双层渐变着色 ----
         # 每种角色类型有独特的鞋型设计，提升视觉辨识度和完成度
