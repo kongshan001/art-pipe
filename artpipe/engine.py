@@ -122,7 +122,7 @@ CHAR_TYPES = {
         "body_ratio": 0.90,  # 纤细身体
         "leg_ratio": 1.15,   # 修长腿
         "arm_ratio": 0.95,   # 细长手臂
-        "accessories": ["scarf", "collar", "earing", "wrist_guards", "cloak"],  # v0.3.39: 新增斗篷
+        "accessories": ["scarf", "collar", "earing", "wrist_guards", "cloak", "potion_bottles"],  # v0.3.39: 新增斗篷, v0.3.66: 新增药水瓶
     },
     "archer": {
         "name": "弓箭手", "head_ratio": 0.19, "body_w": 0.25,
@@ -149,7 +149,7 @@ CHAR_TYPES = {
         "body_ratio": 0.95,  # 正常体型
         "leg_ratio": 1.00,   # 正常腿
         "arm_ratio": 0.95,   # 纤细手臂
-        "accessories": ["collar", "scarf", "earing"],
+        "accessories": ["collar", "scarf", "earing", "potion_bottles"],  # v0.3.66: 新增药水瓶
     },
     "monster": {
         "name": "怪物", "head_ratio": 0.30, "body_w": 0.40,
@@ -187,7 +187,7 @@ CHAR_TYPES = {
         "body_ratio": 0.88,  # 纤细身材
         "leg_ratio": 1.05,   # 灵活腿
         "arm_ratio": 1.00,   # 匀称手臂
-        "accessories": ["scarf", "earing", "collar", "belt", "cloak"],  # v0.3.39: 新增斗篷
+        "accessories": ["scarf", "earing", "collar", "belt", "cloak", "potion_bottles"],  # v0.3.39: 新增斗篷, v0.3.66: 新增药水瓶
     },
 }
 
@@ -1919,23 +1919,22 @@ class CharacterEngine:
                     #       参考：slynyrd(2024)像素教程"Posterize your gradients for cleaner pixel art"
                     #       量化后每个色带内的像素颜色完全一致，消除亚像素色彩噪声，
                     #       同时在色带边界形成锐利过渡——这是像素艺术的核心美学特征。
-                    # 实现：将_hdot∈[-1,1]映射到4级量化值：-10/-3/+4/+12
-                    #       低2级偏暗（阴影和过渡），高2级偏亮（中间调和高光）
+                    # v0.3.66: 色相偏移渐变(Hue-Shift Gradient) — 用暖/冷色温替代纯亮度偏移
+                    #       与v0.3.30身体着色一致：高光区向暖黄色旋转色相(+饱和度降低)，
+                    #       阴影区向冷蓝色旋转色相(+饱和度增加)。头发不再只是明暗变化，
+                    #       而是有真实的色温过渡，大幅提升立体感和材质真实感。
+                    # 实现：4级色带分别用_warm_shift/_cool_shift替代纯亮度加减
                     _hband = _hdot * 2 + 2  # 映射到[0, 4]
+                    _hbase = (int(_hp[0]), int(_hp[1]), int(_hp[2]))
                     if _hband < 1.0:
-                        _hbright = -10  # 深阴影带（背光侧）
+                        _hshifted = _cool_shift(_hbase, 18)   # 深阴影带→冷色温（强冷偏移）
                     elif _hband < 2.0:
-                        _hbright = -3   # 过渡暗带
+                        _hshifted = _cool_shift(_hbase, 7)    # 过渡暗带→微冷色温
                     elif _hband < 3.0:
-                        _hbright = 4    # 过渡亮带
+                        _hshifted = _warm_shift(_hbase, 8)    # 过渡亮带→微暖色温
                     else:
-                        _hbright = 12   # 高光带（受光侧）
-                    canvas[y][x] = (
-                        min(255, max(0, int(_hp[0]) + _hbright)),
-                        min(255, max(0, int(_hp[1]) + _hbright)),
-                        min(255, max(0, int(_hp[2]) + _hbright)),
-                        _hp[3]
-                    )
+                        _hshifted = _warm_shift(_hbase, 20)   # 高光带→暖色温（强暖偏移）
+                    canvas[y][x] = (*_hshifted, _hp[3])
         
         # ---- v0.3.39: 发丝纹理(Strand Texture) — 竖直交替条纹模拟发丝走向 ----
         # 原理：真实头发由数千根独立发丝组成，在光照下形成规律的光影条纹。
@@ -3631,6 +3630,62 @@ class CharacterEngine:
                 clasp_x = cx
                 if 0 <= clasp_x < W and 0 <= clasp_y < H:
                     canvas[clasp_y][clasp_x] = (*accent_light, 255)
+
+            elif acc == "potion_bottles":
+                # v0.3.66: 腰带药水瓶(Belt Potion Bottles) — 法师/治疗师/诗人腰间的小药水瓶
+                # 原理：奇幻角色经常在腰带上挂着彩色药水瓶，这是角色职业辨识的经典视觉元素。
+                #       药水瓶用鲜艳的宝石色调（红/蓝/绿）在暗色腰带/衣物上形成视觉焦点，
+                #       同时暗示角色的炼金/治疗/魔法能力。
+                # 实现：在腰带位置右侧画2-3个微小瓶形（圆底+细颈+瓶塞），用预定义药水色，
+                #       瓶身用该色+高光+暗面3级渐变，瓶塞用棕色。随seed决定瓶数和颜色。
+                _pot_y = body_top + body_h * 2 // 3 + max(1, ps // 2)  # 瓶子起始Y（腰带下方）
+                _pot_colors = [
+                    (180, 50, 50),   # 红色药水（生命）
+                    (50, 80, 180),   # 蓝色药水（魔力）
+                    (50, 160, 70),   # 绿色药水（解毒）
+                ]
+                # 用seed选择药水颜色和数量
+                _pot_seed = rng.seed if hasattr(rng, 'seed') else 0
+                _n_pots = 2 + (_pot_seed % 2)  # 2或3个瓶子
+                _bottle_w = max(ps, 2)  # 瓶身宽度
+                _bottle_h = max(ps + 1, 3)  # 瓶身高度
+                _neck_h = max(1, ps // 2)  # 瓶颈高度
+                _bottle_gap = _bottle_w + 1  # 瓶子间距
+                for i in range(_n_pots):
+                    pot_color = _pot_colors[(i + _pot_seed // 7) % len(_pot_colors)]
+                    pot_highlight = (min(255, pot_color[0] + 50), min(255, pot_color[1] + 50), min(255, pot_color[2] + 50))
+                    pot_shadow = (max(0, pot_color[0] - 40), max(0, pot_color[1] - 40), max(0, pot_color[2] - 40))
+                    # 瓶子X位置：身体右侧，依次排列
+                    bx = cx + body_draw_w // 2 + ps + i * _bottle_gap
+                    # 瓶颈（上方细窄部分）
+                    for dy2 in range(_neck_h):
+                        ny = _pot_y - _neck_h + dy2
+                        if 0 <= ny < H and 0 <= bx < W:
+                            canvas[ny][bx] = (*pot_shadow, 255)
+                    # 瓶塞（瓶颈顶部1px棕色）
+                    cork_y = _pot_y - _neck_h - 1
+                    if 0 <= cork_y < H and 0 <= bx < W:
+                        canvas[cork_y][bx] = (139, 90, 43, 255)  # 棕色木塞
+                    # 瓶身（圆底矩形）
+                    for dy2 in range(_bottle_h):
+                        by = _pot_y + dy2
+                        for dx2 in range(_bottle_w):
+                            bxx = bx + dx2
+                            if 0 <= bxx < W and 0 <= by < H:
+                                # 3级渐变：左侧暗面，中间基色，右侧高光
+                                if dx2 == 0:
+                                    canvas[by][bxx] = (*pot_shadow, 255)
+                                elif dx2 == _bottle_w - 1:
+                                    canvas[by][bxx] = (*pot_highlight, 255)
+                                else:
+                                    canvas[by][bxx] = (*pot_color, 255)
+                    # 瓶底圆弧（底行中间向左右扩展1px）
+                    bot_y = _pot_y + _bottle_h
+                    if 0 <= bot_y < H:
+                        for dx2 in range(-1, _bottle_w + 1):
+                            bxx = bx + dx2
+                            if 0 <= bxx < W:
+                                canvas[bot_y][bxx] = (*pot_shadow, 255)
 
         # ---- 武器（v0.3.6: 跟随右臂偏移 + weapon_angle旋转） ----
         weapon = type_cfg.get("weapon", "none")
