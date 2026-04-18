@@ -1,5 +1,6 @@
 """
 ArtPipe 角色生成引擎 v0.3
+v0.3.65: 受击水平击退(Hurt Knockback,body_dx 3px ease-out快速击退)+死亡侧倾(Die Body Tilt,body_dx 4px ease-in加速侧倾模拟重心失衡倒地)
 v0.3.57: 胸甲V形线(Chest Plate V-Line,肩到胸口的V形暗线暗示胸甲/胸肌结构)+下颌轮廓线(Jawline Contour,头部底部弧形暗线定义下颌形状)
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
 v0.3.53: 攻击武器动态发光(Attack Weapon Glow,蓄力微光→挥出峰值→收招渐熄三阶段)+防御武器微光(Defend Glow,格挡时武器微微闪光)+受击冲击粒子(Hurt Impact Sparks,受击时6颗accent色火花从身体中心向外扩散渐淡)
@@ -1069,8 +1070,11 @@ class CharacterEngine:
         elif anim == "hurt":
             # 受击：整体后仰（v0.3.22: ease-out缓出 — 快速冲击后减速）
             # v0.3.64: 受击后增加ease_out_back过冲回弹（被击飞→回弹→稳定）
+            # v0.3.65: 受击水平击退(Hurt Knockback) — 被击飞时身体整体后移3px，
+            #          ease-out曲线快速位移后减速，配合body_dy形成真实的受击弧线轨迹
             et = self._ease_out(t)
             ov = self._ease_out_back(t)
+            pose["body_dx"] = int(et * 3)   # 水平击退3px，ease-out快速位移
             pose["body_dy"] = int(ov * 2)  # 过冲：先到2.2px再回弹到2px
             pose["head_dy"] = int(et * 3)
             pose["left_arm_dx"] = int(et * 2)
@@ -1109,11 +1113,14 @@ class CharacterEngine:
         
         elif anim == "die":
             # 死亡：身体下沉（v0.3.22: ease-in加速 — 逐渐加速倒下，最后瘫软）
+            # v0.3.65: 死亡侧倾(Die Body Tilt) — 倒下时身体向一侧倾斜4px，
+            #          ease-in加速侧倾模拟重心失衡倒地，比纯垂直下沉更真实自然
             et = self._ease_in(t)
+            pose["body_dx"] = int(et * 4)    # 侧倾4px，ease-in逐渐加速倒向一侧
             pose["body_dy"] = int(et * 8)
             pose["head_dy"] = int(et * 10)
-            pose["left_arm_dx"] = int(et * 2)
-            pose["right_arm_dx"] = int(et * 2)
+            pose["left_arm_dx"] = int(et * 3)  # 增强：手臂跟随侧倾方向甩出
+            pose["right_arm_dx"] = int(et * 3)
             pose["left_leg_dx"] = int(et * 1)
             pose["right_leg_dx"] = int(et * -1)
         
