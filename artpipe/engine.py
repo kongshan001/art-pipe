@@ -860,6 +860,16 @@ class CharacterEngine:
         t1 = t - 1
         return t1 * t1 * t1 + 1
 
+    @staticmethod
+    def _ease_out_back(t):
+        """v0.3.64: 回弹缓出 — 经典back ease-out，先超出目标再回弹
+        基于CSS/Robert Penner easeOutBack公式，overshoot量~10%
+        用于：攻击前冲过冲、施法释放回弹、着地压扁过冲
+        """
+        s = 1.70158  # 标准overshoot系数
+        t1 = t - 1
+        return t1 * t1 * ((s + 1) * t1 + s) + 1
+
     def _calc_pose(self, anim, t):
         """根据动画类型和时间计算各肢体偏移量
         返回一个 pose dict，包含：
@@ -1007,8 +1017,10 @@ class CharacterEngine:
                 if fall > 0.7:
                     # 着地缓冲
                     cushion = (fall - 0.7) / 0.3
-                    pose["body_dy"] = int(cushion * 2)
-                    pose["head_dy"] = int(cushion * 1)
+                    # v0.3.64: 着地过冲回弹（先压扁过度，再弹回）
+                    ov_cushion = self._ease_out_back(cushion)
+                    pose["body_dy"] = int(min(4, ov_cushion * 3))  # 过冲：先到3.3px再回弹到3px
+                    pose["head_dy"] = int(ov_cushion * 1)
                     pose["left_leg_dy"] = int(cushion * 1)
                     pose["right_leg_dy"] = int(cushion * 1)
                     # v0.3.25: 着地squash（横向膨胀+纵向压缩，体积守恒）
@@ -1038,12 +1050,15 @@ class CharacterEngine:
                 pose["head_dy"] = int(swing * 1)  # 头随身体
             else:
                 # 挥出阶段：快速前刺，身体前冲但头部保持（ease-out快速爆发）
+                # v0.3.64: 身体前冲使用ease_out_back过冲，模拟武器惯性回弹
                 raw = (t - 0.4) / 0.6  # 0→1
                 swing = self._ease_out(raw)
                 retract = max(0, 1 - swing * 1.5)
+                # 过冲效果：body_dy先冲过目标(-3px)，再回弹到(-2px)
+                ov = self._ease_out_back(raw)
                 pose["right_arm_dx"] = int(5 * (1 - retract))
                 pose["right_arm_dy"] = -int(3 * (1 - retract))
-                pose["body_dy"] = -int(swing * 2)  # 身体前冲（独立于头部）
+                pose["body_dy"] = -int(min(3, ov * 2 + 0.5))  # 过冲：最大-3px，稳定在-2px
                 pose["head_dy"] = int(max(0, 1 - swing * 2))  # 头部略微后仰后恢复
                 pose["weapon_angle"] = (1 - retract) * 1.0
             # 前冲时左腿后蹬
@@ -1053,8 +1068,10 @@ class CharacterEngine:
             
         elif anim == "hurt":
             # 受击：整体后仰（v0.3.22: ease-out缓出 — 快速冲击后减速）
+            # v0.3.64: 受击后增加ease_out_back过冲回弹（被击飞→回弹→稳定）
             et = self._ease_out(t)
-            pose["body_dy"] = int(et * 2)
+            ov = self._ease_out_back(t)
+            pose["body_dy"] = int(ov * 2)  # 过冲：先到2.2px再回弹到2px
             pose["head_dy"] = int(et * 3)
             pose["left_arm_dx"] = int(et * 2)
             pose["right_arm_dx"] = int(et * 2)
@@ -1148,10 +1165,12 @@ class CharacterEngine:
                 pose["right_leg_dx"] = int(release * 1)
             else:
                 # 恢复阶段：逐渐回到idle姿态（ease-out缓出）
+                # v0.3.64: 释放后手臂ease_out_back过冲回弹（施法后惯性+魔力反冲）
                 raw = (t - 0.57) / 0.43  # 0→1
                 ease = self._ease_out(raw)
+                ov = self._ease_out_back(raw)
                 pose["right_arm_dy"] = -int(2 * (1 - ease))
-                pose["right_arm_dx"] = int(2 * (1 - ease))
+                pose["right_arm_dx"] = int(2 * ov)  # 过冲：先到2.2再回弹到2
                 pose["left_arm_dy"] = -int(1 * (1 - ease))
                 pose["body_dy"] = -int(1 * (1 - ease))
                 pose["weapon_angle"] = 0.4 * (1 - ease)
@@ -1627,15 +1646,33 @@ class CharacterEngine:
         hair_dark = (max(0, hair_color[0]-40), max(0, hair_color[1]-40), max(0, hair_color[2]-40))
         # 头发高光
         hair_light = (min(255, hair_color[0]+30), min(255, hair_color[1]+30), min(255, hair_color[2]+30))
+        # v0.3.64: 头发体积色带 — 中间色（发丝体色，介于暗色和基色之间）
+        hair_mid = (
+            (hair_dark[0] + hair_color[0]) // 2,
+            (hair_dark[1] + hair_color[1]) // 2,
+            (hair_dark[2] + hair_color[2]) // 2,
+        )
 
         if hair_style != "bald":
             if hair_style == "short":
                 # 短发：头顶薄层（覆盖头部上半部分）
-                for y in range(max(0, head_cy - head_r - ps), head_cy - head_r//3):
+                # v0.3.64: 体积色带 — 顶部高光→中间色→根部暗色，3层渐变
+                hair_top_y = max(0, head_cy - head_r - ps)
+                hair_bot_y = head_cy - head_r//3
+                hair_height = max(1, hair_bot_y - hair_top_y)
+                for y in range(hair_top_y, hair_bot_y):
+                    # 垂直位置比例: 0=顶部(高光), 1=底部(暗色)
+                    band_t = (y - hair_top_y) / hair_height
                     for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
                         dx, dy = x - cx, y - head_cy
                         if dx*dx + (dy+ps)*(dy+ps) <= (head_r+ps)*(head_r+ps) and dy < -head_r//3:
-                            canvas[y][x] = (*hair_color, 255)
+                            # v0.3.64: 三色带着色
+                            if band_t < 0.25:
+                                canvas[y][x] = (*hair_light, 255)  # 顶部：高光
+                            elif band_t < 0.6:
+                                canvas[y][x] = (*hair_color, 255)  # 中上：基色
+                            else:
+                                canvas[y][x] = (*hair_mid, 255)    # 中下：中间色（过渡到暗色）
                 # 刘海高光
                 hl_y = max(0, head_cy - head_r - ps + 1)
                 for x in range(max(0, cx - head_r//2), min(W, cx + head_r//2)):
@@ -1645,15 +1682,26 @@ class CharacterEngine:
             elif hair_style == "medium":
                 # 中发：覆盖头顶+两侧到耳朵位置
                 # v0.3.48: 次级运动 — 两侧延伸头发随body_dx反向延迟摆动
+                # v0.3.64: 体积色带 — 顶部高光→基色→根部中间色
                 _hair_sway = -body_dx if body_dx != 0 else 0
-                for y in range(max(0, head_cy - head_r - ps), head_cy + head_r//4):
+                med_top_y = max(0, head_cy - head_r - ps)
+                med_bot_y = head_cy + head_r//4
+                med_height = max(1, med_bot_y - med_top_y)
+                for y in range(med_top_y, med_bot_y):
+                    band_t = (y - med_top_y) / med_height
                     for x in range(max(0, cx - head_r - ps), min(W, cx + head_r + ps)):
                         dx, dy = x - cx, y - head_cy
                         # 椭圆形头发覆盖
                         hair_rx = head_r + ps
                         hair_ry = head_r + ps
                         if dx*dx + (dy+ps)*(dy+ps) <= hair_rx*hair_ry and dy < 0:
-                            canvas[y][x] = (*hair_color, 255)
+                            # v0.3.64: 三色带
+                            if band_t < 0.2:
+                                canvas[y][x] = (*hair_light, 255)  # 顶部：高光
+                            elif band_t < 0.55:
+                                canvas[y][x] = (*hair_color, 255)  # 中上：基色
+                            else:
+                                canvas[y][x] = (*hair_mid, 255)    # 中下：中间色
                         # 两侧延伸（v0.3.48: 受hair_sway影响，运动时偏移）
                         elif abs(dy) <= head_r//3 and abs(dx) >= head_r - ps and abs(dx) <= head_r + ps:
                             sway_x = x + _hair_sway
@@ -1672,15 +1720,26 @@ class CharacterEngine:
             elif hair_style == "long":
                 # 长发：覆盖头顶+延伸到肩部背后
                 # v0.3.48: 次级运动 — 长发两侧垂发随body_dx反向延迟摆动（跟随通过原则）
+                # v0.3.64: 体积色带 — 顶部高光→基色→根部中间色
                 _hair_sway = -body_dx if body_dx != 0 else 0
                 # 头顶部分
-                for y in range(max(0, head_cy - head_r - ps), head_cy + head_r//3):
+                long_top_y = max(0, head_cy - head_r - ps)
+                long_bot_y = head_cy + head_r//3
+                long_height = max(1, long_bot_y - long_top_y)
+                for y in range(long_top_y, long_bot_y):
+                    band_t = (y - long_top_y) / long_height
                     for x in range(max(0, cx - head_r - ps*2), min(W, cx + head_r + ps*2)):
                         dx, dy = x - cx, y - head_cy
                         hair_rx = head_r + ps*2
                         hair_ry = head_r + ps
                         if dx*dx + (dy+ps)*(dy+ps) <= hair_rx*hair_ry and dy < 0:
-                            canvas[y][x] = (*hair_color, 255)
+                            # v0.3.64: 三色带
+                            if band_t < 0.2:
+                                canvas[y][x] = (*hair_light, 255)  # 顶部：高光
+                            elif band_t < 0.5:
+                                canvas[y][x] = (*hair_color, 255)  # 中上：基色
+                            else:
+                                canvas[y][x] = (*hair_mid, 255)    # 中下：中间色
                 # 两侧长发垂下到肩部（v0.3.48: 受hair_sway偏移）
                 hair_drop_top = head_cy
                 hair_drop_bot = min(H, body_top + body_h // 3)
