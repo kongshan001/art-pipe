@@ -924,6 +924,13 @@ class CharacterEngine:
             # 手臂自然摆动（与腿反向）
             pose["left_arm_dx"] = int(math.sin(phase + math.pi) * 1)
             pose["right_arm_dx"] = int(math.sin(phase) * 1)
+            # v0.3.62: 手臂垂直摆动 — 行走时手臂前摆微抬、后摆微落
+            # 生物力学：前摆时手臂自然抬起（离心效应），后摆时自然下沉（重力+放松）
+            # 垂直分量与水平分量90°相位差（cos vs sin），形成椭圆摆动轨迹
+            # 幅度1.5px（int后±1px），与arm_dx同量级保持自然比例
+            # 左右臂各0.3rad相位差避免完全对称（延续v0.3.61 idle手臂异步思路）
+            pose["left_arm_dy"] = round(math.cos(phase + math.pi + 0.3) * 1.5)
+            pose["right_arm_dy"] = round(math.cos(phase - 0.3) * 1.5)
             
         elif anim == "run":
             # 更大幅度的腿交替 + 身体前倾
@@ -942,7 +949,9 @@ class CharacterEngine:
             pose["head_dy"] = -int(abs(math.sin(phase * 2 + 0.3)) * 2.5)
             pose["left_arm_dx"] = int(math.sin(phase + math.pi) * 2)
             pose["right_arm_dx"] = int(math.sin(phase) * 2)
-            pose["left_arm_dy"] = -int(abs(math.sin(phase + math.pi)) * 1)
+            # v0.3.62: 跑步手臂垂直摆动 +0.2rad相位差（左右臂异步）
+            # 保留原arm_dy逻辑，仅在左臂相位偏移+0.2rad产生微妙不对称
+            pose["left_arm_dy"] = -int(abs(math.sin(phase + math.pi + 0.2)) * 1)
             pose["right_arm_dy"] = -int(abs(math.sin(phase)) * 1)
             
         elif anim == "jump":
@@ -3488,7 +3497,7 @@ class CharacterEngine:
                     _cloak_dist = min(1.0, (y - cloak_top) / max(1, cloak_bot - cloak_top))
                     _cloak_sway = int(_cloak_wind * _cloak_dist * 1.5)
                     # 波浪褶皱效果：宽度随y轴正弦波动（v0.3.48: 加入frame_idx动态飘动）
-                    wave = int(math.sin((y - cloak_top) * 0.25 + seed * 0.1 + frame_idx * 0.15) * ps)
+                    wave = int(math.sin((y - cloak_top) * 0.25 + (rng.seed % 100) * 0.1 + frame_idx * 0.15) * ps)
                     left_x = max(0, cx - body_w // 2 - cloak_w + wave + _cloak_sway)
                     right_x = max(0, cx - body_w // 2 - ps // 2 + wave + _cloak_sway)
                     for x in range(left_x, min(W, right_x)):
@@ -3506,7 +3515,7 @@ class CharacterEngine:
                 for y in range(max(0, cloak_top), cloak_bot):
                     _cloak_dist = min(1.0, (y - cloak_top) / max(1, cloak_bot - cloak_top))
                     _cloak_sway = int(_cloak_wind * _cloak_dist * 1.5)
-                    wave = int(math.sin((y - cloak_top) * 0.25 + seed * 0.1 + 1.5 + frame_idx * 0.15) * ps)
+                    wave = int(math.sin((y - cloak_top) * 0.25 + (rng.seed % 100) * 0.1 + 1.5 + frame_idx * 0.15) * ps)
                     left_x2 = min(W, cx + body_w // 2 + ps // 2 + wave + _cloak_sway)
                     right_x2 = min(W, cx + body_w // 2 + cloak_w + wave + _cloak_sway)
                     for x in range(max(0, left_x2), min(W, right_x2)):
