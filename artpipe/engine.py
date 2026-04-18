@@ -1999,6 +1999,49 @@ class CharacterEngine:
                             else:
                                 canvas[ey][ex] = (*skin, 255)
         
+        # ---- v0.3.50a: 下巴投射阴影（Chin Cast Shadow）— 下巴在下颈部/上胸部的柔和投影 ----
+        # 原理：真实光照中，下巴作为突出结构会在下方产生一道弧形阴影投射到颈部和上胸部。
+        #       这是头-颈区域最重要的深度线索之一，缺少它会让下巴看起来"融进"脖子。
+        #       与v0.3.33头发投射阴影不同：头发阴影投在额头上（上方→下方，冷色调），
+        #       下巴阴影投在颈部/胸口（头部→身体，偏暖色调因为距离近且受环境反射影响）。
+        #       专业像素美术技法（Slynyrd, MortMort教程）：在头部底端画一道弧形暗带，
+        #       宽度与下巴弧度一致，向下渐淡2-3px，是区分"业余"和"专业"角色的关键细节。
+        # 实现：扫描头部球体底部边缘（head_cy + head_r*0.6 ~ head_cy + head_r），
+        #       在其下方2-3px的皮肤/身体像素上添加偏暖暗化（R-15,G-12,B-8）。
+        #       阴影形状随头部球体底部弧线：中间最深（下巴尖正下方），两侧渐浅（下颌角）。
+        #       偏暖是因为颈部皮肤反射了衣物和环境的暖色光。
+        _chin_shadow_base = head_cy + head_r  # 下巴底端Y坐标
+        _chin_shadow_depth = 3  # 阴影延伸深度（px）
+        for _cs_dy in range(_chin_shadow_depth):
+            _cs_y = _chin_shadow_base + _cs_dy
+            if _cs_y < 0 or _cs_y >= H:
+                continue
+            # 阴影宽度随深度增加：下巴尖处窄，往下渐宽（模拟光锥扩散）
+            _cs_half_w = int(head_r * (0.5 + _cs_dy * 0.15))
+            for _cs_x in range(max(0, cx - _cs_half_w), min(W, cx + _cs_half_w)):
+                _cs_px = canvas[_cs_y][_cs_x]
+                if _cs_px[3] == 0:
+                    continue
+                # 横向衰减：中间最深，两侧渐浅（弧形阴影）
+                _cs_hdx = abs(_cs_x - cx) / max(1, _cs_half_w)
+                if _cs_hdx > 1.0:
+                    continue
+                # 纵向衰减：越往下越淡
+                _cs_vfade = 1.0 - _cs_dy / _chin_shadow_depth
+                # 综合强度（横向弧形 × 纵向渐淡）
+                _cs_intensity = (1.0 - _cs_hdx * _cs_hdx) * _cs_vfade
+                if _cs_intensity < 0.1:
+                    continue
+                # 暗化量：偏暖色调（R多减，B少减→阴影偏暖）
+                _cs_dark = int(_cs_intensity * 20)
+                if _cs_dark > 1:
+                    canvas[_cs_y][_cs_x] = (
+                        max(0, int(_cs_px[0]) - _cs_dark - 3),     # R多减3偏暖阴影
+                        max(0, int(_cs_px[1]) - _cs_dark),          # G标准减
+                        max(0, int(_cs_px[2]) - _cs_dark + 5),      # B少减5（偏暖）
+                        _cs_px[3]
+                    )
+        
         # ---- 绘制身体（v0.3.11: 颜色分层+服装纹理图案渲染） ----
         # 纹理由 _render_all_frames 在帧循环前一次性选定
         
@@ -2152,6 +2195,31 @@ class CharacterEngine:
                         min(255, b + max(0, boost - 3)),  # 蓝色少增（偏暖）
                         a
                     )
+        
+        # ---- v0.3.50b: 领口分色线（Neckline Edge Line）— 颈部与身体的衣物边界线 ----
+        # 原理：像素美术中"内部分色线(inner separation line)"的经典应用：
+        #       在颈部（皮肤）和身体（衣物）的交界处画一道水平暗线，
+        #       让角色看起来像"穿着领口"而不是"头长在身体上"。
+        #       与v0.3.39袖口分色线同理：都是不同材质交界处的视觉分隔线。
+        #       这条线暗示了衣物的领口/领子存在，即使没有画具体的领子形状，
+        #       也能让观者自动脑补出"这里有一件衣服的上边缘"。
+        # 实现：在body_top行画1px水平暗线，宽度等于身体实际渲染宽度，
+        #       颜色比身体色深30-40单位。仅覆盖不透明像素。
+        #       左侧受光面稍浅（+8暖光补偿），右侧背光面更深，保持光照一致性。
+        _nl_y = body_top
+        if 0 <= _nl_y < H:
+            for _nl_x in range(max(0, cx - _contour_hw), min(W, cx + _contour_hw)):
+                _nl_px = canvas[_nl_y][_nl_x]
+                if _nl_px[3] == 0:
+                    continue
+                # 左侧受光面稍浅，右侧背光面更深
+                _nl_light_bias = 0
+                if _nl_x < cx:
+                    _nl_light_bias = 6  # 受光侧补偿
+                _nl_dark_r = max(0, body_color[0] - 35 + _nl_light_bias)
+                _nl_dark_g = max(0, body_color[1] - 32 + _nl_light_bias)
+                _nl_dark_b = max(0, body_color[2] - 28 + _nl_light_bias)
+                canvas[_nl_y][_nl_x] = (_nl_dark_r, _nl_dark_g, _nl_dark_b, 255)
         
         # ---- v0.3.34: 身体椭球法线渐变着色 ----
         # 将身体近似为椭球体，计算每个像素的法线方向与光源方向的点积
