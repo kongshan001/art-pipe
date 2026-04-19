@@ -1124,6 +1124,14 @@ class CharacterEngine:
             arm_sway = math.sin(t * math.pi * 2 + 0.3)
             pose["left_arm_dy"] = round(math.sin(t * math.pi * 2 + 0.3 + 0.6) * 1.5)
             pose["right_arm_dy"] = round(arm_sway * 1.5)
+            # v0.3.81: 闲置武器微摆(Idle Weapon Sway) — 武器随呼吸缓慢摇摆
+            # 原理：持武器站立时，武器重量让手臂和武器形成一个钟摆系统，
+            #       呼吸的胸腔起伏会让这个钟摆产生微小摆动。
+            #       在像素美术中，通过weapon_angle的微小正弦变化(±0.05弧度≈±3°)模拟，
+            #       与呼吸(breath)同频但相位偏移0.4rad(延迟≈64ms)模拟惯性滞后。
+            #       这是经典的"Follow Through & Overlapping Action"(迪士尼原则5)：
+            #       身体先动，附属物(武器)因惯性延迟跟随。让武器不再是僵硬的装饰。
+            pose["weapon_angle"] = math.sin(t * math.pi * 2 + 0.4) * 0.05
             
         elif anim == "walk":
             # 腿交替迈步 + 轻微身体上下浮动
@@ -1160,6 +1168,18 @@ class CharacterEngine:
             #       幅度仅1px（int后±0.5→±1），保持微妙感，避免像素角色"歪头"。
             #       与head_dy叠加形成斜向运动弧线，配合body_dx已有横向偏移创造3D运动感。
             pose["head_dx"] = int(math.sin(phase) * 1.0)
+            # v0.3.81: 行步步态变形(Walk Gait Squash-Stretch) — 接触帧squash+通过帧stretch
+            # 原理：专业角色动画(Richard Williams大师课/迪士尼12原则之Squash & Stretch)中，
+            #       行走周期每步有两次变形：(1)脚着地接触帧(contact)→身体squash(横向膨胀+纵向压缩)
+            #       (2)腿经过支撑点下方(passing)→身体stretch(纵向拉长+横向收窄)。
+            #       这让角色看起来有弹性和重量感，而非刚性滑行。
+            #       生物力学：着地时膝关节弯曲吸收冲击→重心下沉→squash；蹬地时腿伸直→重心上推→stretch。
+            #       相位用abs(sin(phase*2))：每步(π弧度)一个完整的squash→stretch周期，
+            #       与body_dy(每步弹跳2次)同频，squash在body_dy最低点(着地)，stretch在body_dy最高点(蹬地)。
+            #       幅度：walk仅±4%/±3%(像素级微妙)，run的±8%/±6%形成力度递进。
+            _walk_gait = abs(math.sin(phase * 2))  # 0=接触帧(squash) 1=通过帧(stretch)
+            pose["body_scale_x"] = 1.0 - 0.04 * _walk_gait + 0.04 * (1.0 - _walk_gait)
+            pose["body_scale_y"] = 1.0 + 0.03 * _walk_gait - 0.03 * (1.0 - _walk_gait)
             
         elif anim == "run":
             # 更大幅度的腿交替 + 身体前倾
@@ -1189,6 +1209,15 @@ class CharacterEngine:
             # 结合body_dy的垂直弹跳，形成45°斜向运动轨迹——增强速度感。
             pose["head_dx"] = int(math.sin(phase) * 2.0)
             pose["right_arm_dy"] = -int(abs(math.sin(phase)) * 1)
+            # v0.3.81: 跑步步态变形(Run Gait Squash-Stretch) — 接触帧squash+腾空stretch
+            # 跑步比行走变形更大(±8%/±6% vs walk的±4%/±3%)，因为跑步有腾空阶段，
+            # 冲击力更大，肌肉弹性变形更明显。参考：Celeste主角Madeline的跑步有明显squash/stretch，
+            # Hollow Knight的主角奔跑时也有轻微的纵向压缩/拉伸。
+            # 相位同walk用abs(sin(phase*2))，但run的phase振幅已经是walk的1.5倍，
+            # 所以变形频率看起来更快更剧烈，符合跑步的快速弹跳节奏。
+            _run_gait = abs(math.sin(phase * 2))
+            pose["body_scale_x"] = 1.0 - 0.08 * _run_gait + 0.08 * (1.0 - _run_gait)
+            pose["body_scale_y"] = 1.0 + 0.06 * _run_gait - 0.06 * (1.0 - _run_gait)
             
         elif anim == "jump":
             # v0.3.2: 跳跃动画 - 蹲→起跳→滞空→落地
