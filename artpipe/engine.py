@@ -4593,7 +4593,41 @@ class CharacterEngine:
                             if 0 <= _sl_py < H and 0 <= _sl_px < W:
                                 if canvas[_sl_py][_sl_px][3] == 0:  # 不覆盖角色像素
                                     canvas[_sl_py][_sl_px] = (220, 215, 205, _sli_alpha)
-        
+
+        # v0.3.77: 攻击前冲扬尘(Attack Lunge Dust) — 攻击前冲时脚底向后飞溅的灰尘
+        # 原理：动作游戏经典细节——角色攻击前冲时，脚掌蹬地产生向后的扬尘，
+        #       模拟真实格斗中选手前进步伐的地面冲击。Street Fighter的前冲步法、
+        #       Samurai Champloo的滑步扬尘都有类似效果。
+        #       与v0.3.49 walk/run扬尘的区别：攻击扬尘方向性更强（向后扩散），
+        #       粒子数量随前冲力度(body_dx)成正比，只在攻击前冲阶段(t≈0.5)出现。
+        #       与v0.3.74攻击速度线互补：速度线是身后的运动轨迹线，扬尘是脚底的地面反馈。
+        # 实现：检测attack动画中body_dx>0的前冲帧，从脚底向后(负X方向)喷射3-5颗暖灰粒子。
+        if anim == "attack":
+            _al_nframes = 6
+            _al_t = frame_idx / max(1, _al_nframes - 1)
+            # 前冲阶段：t=0.35~0.65（与body_dx前冲同步）
+            if 0.3 < _al_t < 0.7:
+                # 获取当前body_dx（v0.3.69攻击前冲机制）
+                _al_pose = self._calc_pose("attack", _al_t)
+                _al_dx = _al_pose.get("body_dx", 0)
+                if _al_dx > 0:  # 只有前冲时才产生扬尘
+                    _al_ground_y = leg_top + leg_h + shoe_h
+                    if _al_ground_y < H:
+                        _al_intensity = _al_dx / 3.0  # 归一化：dx=3时intensity=1.0
+                        _al_count = int(3 + _al_intensity * 3)  # 3-6颗
+                        _al_alpha_base = int(60 * _al_intensity)
+                        _al_seed = frame_idx * 13 + 5
+                        for _ali in range(_al_count):
+                            # X偏移：向后（负X方向）飞溅，距离1-5px
+                            _al_px = cx + body_dx - 1 - ((_al_seed + _ali * 7) % 5)
+                            # Y偏移：脚底上方0-2px
+                            _al_py = _al_ground_y - ((_al_seed + _ali * 3) % 3)
+                            _al_alpha = int(_al_alpha_base * (1.0 - _ali / max(1, _al_count)))
+                            if 0 <= _al_py < H and 0 <= _al_px < W and _al_alpha > 10:
+                                if canvas[_al_py][_al_px][3] == 0:
+                                    # 暖灰色扬尘（比walk扬尘偏暖，模拟前冲摩擦热量）
+                                    canvas[_al_py][_al_px] = (195, 175, 150, _al_alpha)
+
         # v0.3.53: 受击冲击粒子（Hurt Impact Sparks）— 受击时飞溅的小火花/碎片粒子
         # 原理：格斗游戏和动作游戏的经典反馈特效，角色被击中时从受击点飞出
         #       小型发光粒子（火花/碎片），提供即时的视觉冲击反馈。
@@ -4628,7 +4662,36 @@ class CharacterEngine:
                     if 0 <= _spark_py < H and 0 <= _spark_px < W and _spark_alpha > 15:
                         if canvas[_spark_py][_spark_px][3] == 0:  # 不覆盖角色像素
                             canvas[_spark_py][_spark_px] = (_spark_r, _spark_g, _spark_b, _spark_alpha)
-        
+
+            # v0.3.77: 受击冲击波纹(Hurt Shockwave Ring) — 从身体中心向外扩展的圆形冲击波
+            # 原理：动作游戏/格斗游戏经典技法——角色被击中时，以身体为中心产生一圈向外扩散的
+            #       能量波纹(冲击波/shockwave)，强化"被重击"的视觉冲击感。
+            #       Street Fighter的命中特效、Guilty Gear的冲击波、Hollow Knight受击都有类似效果。
+            #       波纹是accent色的半透明环，半径随帧数扩大，alpha随距离递减。
+            #       与冲击粒子(v0.3.53)互补：粒子是离散的飞溅碎片，波纹是连续的能量扩散面。
+            # 实现：绘制一个圆环(外半径-内半径=1~2px)，中心在身体中心，半径随t增大。
+            #       波纹仅在透明像素上绘制，不覆盖角色内容。
+            if _spark_fade > 0.05:
+                _ring_cx = cx + body_dx
+                _ring_cy = body_top + body_h // 2
+                _ring_radius = int(4 + _hurt_t * 12)  # 首帧4px → 末帧16px
+                _ring_width = max(1, 2 - int(_hurt_t * 2))  # 首帧2px宽 → 末帧1px宽
+                _ring_alpha_base = int(120 * _spark_fade)  # 随fade衰减
+                if _ring_alpha_base > 10:
+                    _ring_r = min(255, accent[0] + 40)
+                    _ring_g = min(255, accent[1] + 35)
+                    _ring_b = min(255, accent[2] + 25)
+                    for _ry in range(max(0, _ring_cy - _ring_radius - _ring_width),
+                                     min(H, _ring_cy + _ring_radius + _ring_width + 1)):
+                        for _rx in range(max(0, _ring_cx - _ring_radius - _ring_width),
+                                         min(W, _ring_cx + _ring_radius + _ring_width + 1)):
+                            _rdist = math.sqrt((_rx - _ring_cx) ** 2 + (_ry - _ring_cy) ** 2)
+                            if abs(_rdist - _ring_radius) <= _ring_width:
+                                _r_falloff = 1.0 - abs(_rdist - _ring_radius) / max(1, _ring_width)
+                                _r_alpha = int(_ring_alpha_base * _r_falloff)
+                                if _r_alpha > 8 and canvas[_ry][_rx][3] == 0:
+                                    canvas[_ry][_rx] = (_ring_r, _ring_g, _ring_b, _r_alpha)
+
         # ---- v0.3.69: 腋窝层间投射阴影(Axilla Inter-Part Cast Shadow) — 手臂在躯干上的定向投影 ----
         # 原理：真实光照中，抬起的物体会在其下方表面投射阴影。手臂与躯干之间
         #       形成的腋窝区域应该比周围更暗，因为来自主光源（左上方）的光线
