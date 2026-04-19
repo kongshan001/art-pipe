@@ -1,5 +1,6 @@
 """
 ArtPipe 角色生成引擎 v0.3
+v0.3.76: 呼吸亮度脉冲(Breath Luminance Pulse,吸气胸腔扩张时身体微亮+呼气收缩时微暗,与body_scale_x同步让呼吸不仅影响形状还影响光照)+手部镜面高光点(Hand Specular Highlight,手掌左上1px亮白点模拟球形表面镜面反射,让手从flat色块变为有3D体积感的球形)
 v0.3.75: 施法升腾魔法粒子(Cast Rising Aura Particles,蓄力阶段身体两侧accent色光粒向上飘升形成能量柱效果)+地面阴影水平跟随(Shadow Body-DX Follow,阴影中心跟随body_dx偏移让水平位移有物理基础)
 v0.3.73: 瞳孔注视漂移(Pupil Gaze Drift,idle/walk时瞳孔/高光±1px正弦漂移模拟微saccade让角色活着感)+跳跃落地冲击扬尘(Jump Landing Impact Dust,jump落地帧8颗冲击扬尘粒子±6px扩散比walk扬尘更剧烈提供着陆反馈)
 v0.3.65: 受击水平击退(Hurt Knockback,body_dx 3px ease-out快速击退)+死亡侧倾(Die Body Tilt,body_dx 4px ease-in加速侧倾模拟重心失衡倒地)
@@ -2986,6 +2987,35 @@ class CharacterEngine:
                         # 带扣用accent_light色（金属光泽感）
                         canvas[_bky][_bkx] = (*accent_light, 255)
         
+        # ---- v0.3.76: 呼吸亮度脉冲(Breath Luminance Pulse) — 吸气亮/呼气暗，与胸腔扩张同步 ----
+        # 原理：真实呼吸中，胸腔扩张(吸气)时肺内气压降低、血氧增加，皮肤在吸气瞬间微充血发亮。
+        #       同时，胸腔扩张使更多体表面积暴露在光照下，整体亮度确实会微增。
+        #       这是微妙的"活着"信号——v0.3.8呼吸动画已有形状变化(body_scale_x)，
+        #       但缺少光照响应：胸腔膨胀时应该微亮(更多面积受光)，收缩时微暗。
+        #       综合效果：形状变化+亮度变化 → 呼吸从"机械缩放"升级为"有生理基础的呼吸"。
+        #       迪士尼动画12原则中的"Slow In and Slow Out"：呼吸不是匀速线性运动，
+        #       吸气阶段有个加速→减速过程，亮度脉冲也跟随这个节奏。
+        # 实现：body_scale_x偏离1.0的量×40=亮度偏移(±2~3单位)。
+        #       仅在idle/cast动画下生效（walk/run/jump/attack等剧烈运动时呼吸效果被运动模糊淹没）。
+        #       使用暖色偏移(R+1,G+1,B-1)：吸气充血偏暖，呼气退血偏冷，模拟真实生理反应。
+        if anim in ("idle", "cast"):
+            _breath_scale = pose.get("body_scale_x", 1.0)
+            _breath_delta = (_breath_scale - 1.0) * 40  # ±2.4亮度单位
+            if abs(_breath_delta) > 0.5:
+                _breath_boost = int(_breath_delta)
+                for _bpy in range(max(0, body_top), min(H, body_bot)):
+                    for _bpx in range(max(0, cx - _contour_hw - 1), min(W, cx + _contour_hw + 1)):
+                        _bp_px = canvas[_bpy][_bpx]
+                        if _bp_px[3] == 0:
+                            continue
+                        # 暖色亮度偏移：吸气+暖(偏红黄), 呼气-暖(偏蓝)
+                        canvas[_bpy][_bpx] = (
+                            min(255, max(0, _bp_px[0] + _breath_boost + 1)),  # R额外+1偏暖
+                            min(255, max(0, _bp_px[1] + _breath_boost + 1)),  # G同步+1
+                            min(255, max(0, _bp_px[2] + _breath_boost - 1)),  # B减1偏暖
+                            _bp_px[3]
+                        )
+        
         # v0.3.27: 恢复原始cx — 腿部使用无偏移的中心保持地面锚定
         # （腿已经有自己的ldx/rdx偏移，不需要body_dx影响）
         if body_dx != 0:
@@ -3527,6 +3557,29 @@ class CharacterEngine:
                     if _re_y - 1 >= 0 and canvas[_re_y - 1][_ex][3] > 0:
                         canvas[_re_y - 1][_ex] = (*_elbow_highlight_color, 255)
                     canvas[_re_y][_ex] = (*_elbow_shadow_color, 255)
+
+        # ---- v0.3.76: 手部镜面高光点(Hand Specular Highlight) — 手掌椭球顶部1px镜面反射 ----
+        # 原理：手掌是用skin_light色填充的椭球(v0.3.24)，但椭球顶部(朝光源侧)应该有
+        #       一个小镜面高光点——这是球面/椭球面在光源直射方向上的菲涅尔反射集中点。
+        #       在像素美术中，1px的纯白/近白高光点就能把"flat色块"变成"3D球体"，
+        #       因为人类视觉系统对高光点极其敏感：高光位置暗示曲面朝向和光源方向。
+        #       参考： MortMort教程"Pixel Art Shading Guide"——"One pixel of highlight
+        #       can sell the 3D form more than 10 pixels of gradient."
+        # 实现：在每只手的椭球顶部偏左1/3处（光源从左上方照射）放置1px高光点。
+        #       颜色为skin_light再提亮25单位但不超过255。仅在手掌椭球内有效像素上添加。
+        #       高光位置选在(hand_x + hand_w*1//3, hand_y)，即椭球顶部偏左，
+        #       与全局光源方向(-0.5, -0.7)一致。
+        _hand_spec_color = (min(255, skin_light[0] + 25), min(255, skin_light[1] + 25), min(255, skin_light[2] + 20))
+        # 左手镜面高光 — 椭球顶部偏左
+        _lsp_x = lh_x + max(0, hand_w * 1 // 3)
+        _lsp_y = lh_y
+        if 0 <= _lsp_y < H and 0 <= _lsp_x < W and canvas[_lsp_y][_lsp_x][3] > 0:
+            canvas[_lsp_y][_lsp_x] = (*_hand_spec_color, 255)
+        # 右手镜面高光 — 椭球顶部偏左
+        _rsp_x = rh_x + max(0, hand_w * 1 // 3)
+        _rsp_y = rh_y
+        if 0 <= _rsp_y < H and 0 <= _rsp_x < W and canvas[_rsp_y][_rsp_x][3] > 0:
+            canvas[_rsp_y][_rsp_x] = (*_hand_spec_color, 255)
 
         # ---- 类型专属配件 ----
         # 战士：盾牌（v0.3.74: 金属法线着色升级 Metal Normal Shading）
