@@ -623,6 +623,211 @@ class AIGenerator:
             time.sleep(3 - elapsed)
         self._last_request_time = time.time()
 
+    # v0.4: 序列帧动画提示词 — 描述每种动画状态的关键姿态
+    # 用于 generate_spritesheet() 生成角色动画表
+    ANIMATION_PROMPTS = {
+        "idle": (
+            "standing idle pose, facing the camera, relaxed stance, "
+            "arms at sides, weight evenly distributed, calm expression"
+        ),
+        "walk": (
+            "walking cycle pose, mid-stride, one foot forward, "
+            "arms swinging naturally, body leaning slightly forward, "
+            "dynamic walking motion"
+        ),
+        "attack": (
+            "attack action pose, swinging weapon aggressively, "
+            "dynamic combat stance, body twisted into powerful strike, "
+            "intense determined expression, motion blur on weapon"
+        ),
+        "hurt": (
+            "taking damage pose, knocked backward, body arched in pain, "
+            "defensive stagger, surprised expression, impact effect"
+        ),
+        "die": (
+            "falling defeated pose, collapsing to the ground, "
+            "body falling backward, limp limbs, dramatic defeat, "
+            "final moments pose"
+        ),
+        "cast": (
+            "casting spell pose, hands raised channeling magic energy, "
+            "glowing magical effects around hands, focused intense expression, "
+            "mystical energy aura"
+        ),
+    }
+
+    # v0.4: 动画表布局配置 — 行=动画状态，列=帧序列
+    SPRITESHEET_LAYOUT = {
+        "animations": ["idle", "walk", "attack", "hurt", "die", "cast"],
+        "frames_per_anim": 8,  # v0.4.1: 默认8帧，更流畅的动画
+        "frame_width": 256,
+        "frame_height": 256,
+    }
+
+    def generate_spritesheet(self, prompt, style="cartoon", char_type="warrior",
+                             seed=None, animations=None, frames_per_anim=4):
+        """
+        v0.4: 生成AI角色序列帧动画表
+
+        策略：逐动画状态生成图片，每状态生成 frames_per_anim 张不同帧
+        最终合成一张完整的 sprite sheet
+
+        Args:
+            prompt: 基础角色描述
+            style: 风格
+            char_type: 角色类型
+            seed: 随机种子（基准，每帧会偏移）
+            animations: 动画列表，默认使用全部6种
+            frames_per_anim: 每种动画生成几帧
+
+        Returns:
+            dict:
+                - images: list[dict] — 每帧的生成结果（含image_bytes, animation, frame_idx）
+                - metadata: dict — 动画表元数据（动画名→帧范围）
+                - total_time: float
+                - success_count: int
+                - fail_count: int
+        """
+        if animations is None:
+            animations = self.SPRITESHEET_LAYOUT["animations"]
+
+        if seed is None:
+            seed = int(time.time()) % 2147483647
+
+        all_frames = []
+        metadata = {}
+        total_start = time.time()
+        success_count = 0
+        fail_count = 0
+
+        for anim_name in animations:
+            anim_prompt = self.ANIMATION_PROMPTS.get(anim_name, "")
+            frame_results = []
+
+            for frame_idx in range(frames_per_anim):
+                # 每帧用不同seed确保变化
+                frame_seed = seed + hash(f"{anim_name}_{frame_idx}") % 100000
+                # 逐帧微调姿势描述，模拟帧序列变化
+                frame_modifier = self._get_frame_modifier(anim_name, frame_idx, frames_per_anim)
+
+                result = self.generate(
+                    prompt=prompt,
+                    style=style,
+                    char_type=char_type,
+                    width=256,
+                    height=256,
+                    seed=frame_seed,
+                    retry=2,
+                    pose=anim_name,
+                )
+
+                if result and result.get("image_bytes"):
+                    result["animation"] = anim_name
+                    result["frame_idx"] = frame_idx
+                    frame_results.append(result)
+                    success_count += 1
+                    print(f"  ✓ {anim_name} frame {frame_idx+1}/{frames_per_anim}")
+                else:
+                    fail_count += 1
+                    print(f"  ✗ {anim_name} frame {frame_idx+1}/{frames_per_anim} FAILED")
+
+                # v0.4.1: Pollinations匿名用户每IP限1并发，帧间需较长等待
+                time.sleep(5)
+
+            metadata[anim_name] = {
+                "start_frame": len(all_frames),
+                "count": len(frame_results),
+                "frame_indices": list(range(len(all_frames), len(all_frames) + len(frame_results))),
+            }
+            all_frames.extend(frame_results)
+
+        total_elapsed = time.time() - total_start
+
+        return {
+            "images": all_frames,
+            "metadata": metadata,
+            "total_time": round(total_elapsed, 2),
+            "success_count": success_count,
+            "fail_count": fail_count,
+            "layout": {
+                "animations": animations,
+                "frames_per_anim": frames_per_anim,
+                "frame_size": [256, 256],
+            },
+        }
+
+    @staticmethod
+    def _get_frame_modifier(anim_name, frame_idx, total_frames):
+        """v0.4: 根据动画类型和帧索引生成微调描述"""
+        # 归一化进度 0.0 → 1.0
+        progress = frame_idx / max(total_frames - 1, 1)
+
+        modifiers = {
+            "idle": [
+                "subtle breathing in, chest very slightly rising",
+                "gentle weight shift to right foot, slight lean",
+                "neutral standing, baseline idle pose",
+                "subtle breathing out, chest settling",
+                "gentle weight shift to left foot, slight lean",
+                "neutral standing, baseline idle pose",
+                "subtle arm micro-adjustment, relaxed",
+                "returning to center stance, calm expression",
+            ],
+            "walk": [
+                "right foot stepping forward, left arm swinging forward",
+                "mid-stride right, weight transferring to right foot",
+                "right foot planted, body passing over, left foot lifting",
+                "left foot stepping forward, right arm swinging forward",
+                "mid-stride left, weight transferring to left foot",
+                "left foot planted, body passing over, right foot lifting",
+                "right foot beginning to step forward again",
+                "full cycle return, passing position",
+            ],
+            "attack": [
+                "anticipation: pulling weapon back, coiling body",
+                "winding up: torso twisted, weapon at peak behind",
+                "mid-swing: weapon arcing forward, body uncoiling",
+                "impact point: full extension, weapon at target",
+                "follow-through: weapon trailing past target",
+                "recovery: weapon swinging down to rest",
+                "resetting stance, bringing weapon to guard position",
+                "returning to ready stance, eyes on target",
+            ],
+            "hurt": [
+                "impact moment: body jolted, initial recoil backward",
+                "staggering: off-balance, stepping back on one foot",
+                "reeling: torso arched, head snapping back",
+                "peak knockback: maximum displacement from impact",
+                "struggling: trying to regain footing, teetering",
+                "stabilizing: finding balance, planting feet",
+                "recovering: straightening posture, raising guard",
+                "back to ready stance, defensive position",
+            ],
+            "die": [
+                "impact: body buckling, knees beginning to give way",
+                "collapsing: torso falling forward, arms dropping",
+                "falling: body tilting backward, losing balance",
+                "mid-fall: body horizontal, arms trailing upward",
+                "descent: body approaching ground, limbs limp",
+                "ground impact: body hitting the ground",
+                "settling: final body adjustment on ground",
+                "final pose: lying motionless, defeated",
+            ],
+            "cast": [
+                "gathering: hands beginning to channel, faint glow",
+                "channeling: energy flowing to hands, aura appearing",
+                "focusing: intense concentration, power building",
+                "peak charge: maximum energy accumulation, bright aura",
+                "release point: hands thrust forward, spell launching",
+                "spell flying: energy projectile leaving hands",
+                "aftermath: residual energy dissipating from hands",
+                "recovery: lowering hands, returning to stance",
+            ],
+        }
+
+        anim_mods = modifiers.get(anim_name, ["subtle pose variation"] * total_frames)
+        return anim_mods[frame_idx % len(anim_mods)]
+
     @staticmethod
     def _detect_format(data):
         """检测图片格式"""

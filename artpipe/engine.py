@@ -1,5 +1,6 @@
 """
 ArtPipe 角色生成引擎 v0.3
+v0.3.75: 施法升腾魔法粒子(Cast Rising Aura Particles,蓄力阶段身体两侧accent色光粒向上飘升形成能量柱效果)+地面阴影水平跟随(Shadow Body-DX Follow,阴影中心跟随body_dx偏移让水平位移有物理基础)
 v0.3.73: 瞳孔注视漂移(Pupil Gaze Drift,idle/walk时瞳孔/高光±1px正弦漂移模拟微saccade让角色活着感)+跳跃落地冲击扬尘(Jump Landing Impact Dust,jump落地帧8颗冲击扬尘粒子±6px扩散比walk扬尘更剧烈提供着陆反馈)
 v0.3.65: 受击水平击退(Hurt Knockback,body_dx 3px ease-out快速击退)+死亡侧倾(Die Body Tilt,body_dx 4px ease-in加速侧倾模拟重心失衡倒地)
 v0.3.57: 胸甲V形线(Chest Plate V-Line,肩到胸口的V形暗线暗示胸甲/胸肌结构)+下颌轮廓线(Jawline Contour,头部底部弧形暗线定义下颌形状)
@@ -307,7 +308,7 @@ class CharacterEngine:
 
     def generate(self, prompt, style=None, char_type=None, seed=None,
                  render_mode="procedural", ai_backend="pollinations",
-                 ai_width=512, ai_height=768):
+                 ai_width=512, ai_height=768, ai_frames_per_anim=8):
         """
         核心生成接口：prompt → 完整角色资产包
         
@@ -350,7 +351,15 @@ class CharacterEngine:
             ai_result = self._generate_ai_image(
                 prompt, s, ct, seed, ai_backend, ai_width, ai_height
             )
-        
+
+        # v0.4: 非像素风 AI 模式 → 额外生成 AI 动画帧
+        ai_spritesheet_result = None
+        if render_mode == "ai" and s != "pixel":
+            ai_spritesheet_result = self._generate_ai_spritesheet(
+                prompt, s, ct, seed, ai_backend,
+                frames_per_anim=ai_frames_per_anim,
+            )
+
         # 程序化渲染（ai模式也做，保证spritesheet可用）
         animations = self._render_all_frames(rng, style_cfg, type_cfg, base_palette, ct)
         skeleton = self._generate_skeleton(type_cfg, base_palette)
@@ -387,7 +396,30 @@ class CharacterEngine:
             # v0.3.12: 缩略图（如果有）
             if ai_result.get("thumbnail_b64"):
                 result["ai_image"]["thumbnail_b64"] = ai_result["thumbnail_b64"]
-        
+
+        # v0.4: AI 动画表数据（非像素风 AI 模式）
+        if ai_spritesheet_result:
+            ai_frames = ai_spritesheet_result.get("images", [])
+            ai_anim_data = {}
+            for frame in ai_frames:
+                anim_name = frame.get("animation", "unknown")
+                if anim_name not in ai_anim_data:
+                    ai_anim_data[anim_name] = []
+                ai_anim_data[anim_name].append({
+                    "image_base64": frame["image_base64"],
+                    "frame_idx": frame["frame_idx"],
+                    "size": frame.get("size", 0),
+                    "generation_time": frame.get("generation_time", 0),
+                })
+            result["ai_spritesheet"] = {
+                "animations": ai_anim_data,
+                "metadata": ai_spritesheet_result.get("metadata", {}),
+                "layout": ai_spritesheet_result.get("layout", {}),
+                "total_time": ai_spritesheet_result.get("total_time", 0),
+                "success_count": ai_spritesheet_result.get("success_count", 0),
+                "fail_count": ai_spritesheet_result.get("fail_count", 0),
+            }
+
         # 附加各动画的帧数据（v0.3.3: 逐动画FPS，不同动画速度不同）
         # v0.3.33: 变量帧时长 — 关键帧(蓄力/冲击)保持更长，过渡帧更短
         #   遵循迪士尼动画12原则的"时间分配"(Timing)原则
@@ -562,6 +594,29 @@ class CharacterEngine:
             return result
         except Exception as e:
             print(f"[Engine] AI generation failed: {e}")
+            return None
+
+    def _generate_ai_spritesheet(self, prompt, style, char_type, seed, backend,
+                                     frames_per_anim=8):
+        """v0.4: 生成AI序列帧动画表（非像素风专用）
+        v0.4.1: frames_per_anim 默认8帧，支持用户自定义
+        """
+        try:
+            from .sd_client import AIGenerator
+            gen = AIGenerator(backend=backend)
+            result = gen.generate_spritesheet(
+                prompt=prompt,
+                style=style,
+                char_type=char_type,
+                seed=seed,
+                animations=["idle", "walk", "attack", "hurt", "die", "cast"],
+                frames_per_anim=frames_per_anim,
+            )
+            print(f"[Engine] AI spritesheet: {result['success_count']} frames OK, "
+                  f"{result['fail_count']} failed, {result['total_time']}s")
+            return result
+        except Exception as e:
+            print(f"[Engine] AI spritesheet generation failed: {e}")
             return None
 
     def _harmonize_palette(self, palette, rng, char_type_key="warrior"):
@@ -5399,10 +5454,58 @@ class CharacterEngine:
                                     _pixel_a
                                 )
 
+        # ---- v0.3.75: 施法升腾魔法粒子(Cast Rising Aura Particles) — 蓄力阶段accent色光粒向上飘升 ----
+        # 原理：经典RPG/动作游戏施法角色周围常有环绕上升的魔法粒子/符文碎片，
+        #       与地面魔法阵(v0.3.52)和武器发光(v0.3.16/53)形成完整的三层视觉：
+        #       地面阵(根基)→上升粒子(能量流动)→武器光(释放焦点)。
+        #       Final Fantasy系列的施法特效大量使用这种能量柱结构。
+        # 实现：在cast蓄力阶段(t<0.57)，从角色身体中部两侧生成3-5颗小光粒，
+        #       每帧向上飘移2-4px，alpha从120渐减到0，颜色为accent色偏亮。
+        #       粒子X位置在身体两侧±(body_draw_w*0.8~1.2)范围内伪随机分布。
+        #       粒子有1px光晕（上下左右各1px半透明像素），与死亡消散粒子(v0.3.70)风格统一。
+        if anim == "cast":
+            _cast_nframes = 7
+            _cast_rise_t = frame_idx / max(1, _cast_nframes - 1)
+            # 仅在蓄力阶段生成粒子（释放后粒子消散）
+            if _cast_rise_t < 0.57:
+                _rise_intensity = _cast_rise_t / 0.57  # 0→1 随蓄力增强
+                _rise_n_parts = 3 + int(_rise_intensity * 3)  # 3→6颗
+                _rise_seed = frame_idx * 31 + 13
+                _rise_body_mid_y = (body_top + body_bot) // 2 + body_dy
+                for _rpi in range(_rise_n_parts):
+                    # 粒子X：身体两侧伪随机分布
+                    _rp_side = 1 if (_rise_seed + _rpi * 17) % 2 == 0 else -1
+                    _rp_offset = int(body_draw_w * (0.6 + ((_rise_seed + _rpi * 7) % 5) * 0.12))
+                    _rp_x = cx + _rp_side * _rp_offset
+                    # 粒子Y：从身体中部向上飘移（帧号越大飘越高）
+                    _rp_float = int(frame_idx * 2.5 + (_rpi * 5) % 8)
+                    _rp_y = _rise_body_mid_y - _rp_float
+                    # 粒子alpha：蓄力越强越亮，每颗粒子递减
+                    _rp_alpha = int(100 * _rise_intensity * max(0.3, 1.0 - _rpi * 0.12))
+                    # 粒子颜色：accent色偏亮+暖
+                    _rp_r = min(255, accent[0] + 55)
+                    _rp_g = min(255, accent[1] + 45)
+                    _rp_b = min(255, accent[2] + 30)
+                    if 0 <= _rp_y < H and 0 <= _rp_x < W and _rp_alpha > 8:
+                        if canvas[_rp_y][_rp_x][3] == 0:  # 不覆盖角色像素
+                            canvas[_rp_y][_rp_x] = (_rp_r, _rp_g, _rp_b, min(255, _rp_alpha))
+                        # 1px光晕
+                        for _rdx, _rdy, _ra_mult in [(1,0,0.35),(-1,0,0.35),(0,1,0.35),(0,-1,0.35)]:
+                            _rgx, _rgy = _rp_x + _rdx, _rp_y + _rdy
+                            _rga = int(_rp_alpha * _ra_mult)
+                            if 0 <= _rgy < H and 0 <= _rgx < W and _rga > 5:
+                                if canvas[_rgy][_rgx][3] < _rga:
+                                    canvas[_rgy][_rgx] = (_rp_r, _rp_g, _rp_b, _rga)
+
         # ---- v0.3.13: 地面阴影投射 — 椭圆形渐变阴影增强空间感 ----
         # 在角色脚底位置绘制一个椭圆形半透明阴影，模拟地面投影
         # 阴影宽度约等于身体宽度+margin，高度很扁（透视压缩）
         # 受 body_dy 影响：角色上升时阴影缩小变淡，下降时扩大变深
+        # v0.3.75: 阴影中心跟随body_dx水平偏移（Shadow Body-DX Follow）—
+        #          当角色因idle重心转移/攻击前冲/受击后退等产生body_dx时，
+        #          地面阴影同步偏移，让水平位移有物理基础的视觉反馈。
+        #          偏移量衰减为body_dx的50%（阴影是投影，不需要100%跟随）
+        _shadow_cx = cx + int(body_dx * 0.5)  # 阴影中心X，跟随body_dx
         shadow_y_base = leg_top + leg_h + body_dy  # 阴影Y基准位置
         shadow_rx = int(body_draw_w * 1.3)  # 阴影水平半径（比身体宽一些）
         shadow_ry = max(2, int(leg_h * 0.15))  # 阴影垂直半径（很扁）
@@ -5442,8 +5545,8 @@ class CharacterEngine:
         ]
         
         for y in range(max(0, shadow_y_base - shadow_ry), min(H, shadow_y_base + shadow_ry + 1)):
-            for x in range(max(0, cx - shadow_rx), min(W, cx + shadow_rx)):
-                dx_s = (x - cx) / max(1, shadow_rx)
+            for x in range(max(0, _shadow_cx - shadow_rx), min(W, _shadow_cx + shadow_rx)):
+                dx_s = (x - _shadow_cx) / max(1, shadow_rx)
                 dy_s = (y - shadow_y_base) / max(1, shadow_ry)
                 dist_sq = dx_s * dx_s + dy_s * dy_s
                 if dist_sq <= 1.0:
