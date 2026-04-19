@@ -1,8 +1,5 @@
 """
 ArtPipe 角色生成引擎 v0.3
-v0.3.82: 奔跑运动拖影条纹(Run Motion Blur Streaks,奔跑时3条水平渐隐条纹从身体后方向外延伸模拟运动模糊增强速度感)+施法蓄力能量螺旋(Cast Charge Energy Spiral,蓄力阶段4颗accent色光点沿阿基米德螺旋线向武器尖端汇聚模拟受控能量凝聚)
-v0.3.81: 闲置武器微摆(Idle Weapon Sway,呼吸时weapon_angle±0.05弧度钟摆摇摆)+行走/奔跑步态变形(Walk/Run Gait Squash-Stretch,接触帧squash+通过帧stretch的迪士尼12原则变形)
-v0.3.80: 瞳孔大小动画响应(Pupil Size Animation Response,攻击缩小/防御放大/受击放大/施法缩小的瞳孔尺寸随动画状态变化)+奔跑/防御动漫汗滴(Run/Defend Anime Sweat Drop,头侧汗滴暗示紧张/疲劳)
 v0.3.79: 防御/受击阴影加深(Defend/Hurt Shadow Density Boost,防御时阴影alpha+20扩大10%模拟蹲防低重心+受击时alpha+15扩大8%反射冲击)+行走/奔跑脚步阴影脉冲(Walk/Run Footstep Shadow Pulse,脚着地帧阴影alpha脉冲+12~18+宽度微扩5%与扬尘粒子同步提供完整物理反馈)
 v0.3.78: 防御格挡冲击闪光(Defend Block Impact Flash,格挡瞬间t≈0.25从武器/盾牌位置爆发accent色扩展光环+4颗火花粒子提供防御冲击反馈)+施法释放能量爆发(Cast Release Energy Burst,施法释放时刻t≈0.43从武器尖端径向爆发accent色能量冲击波强化魔法释放感)
 v0.3.76: 呼吸亮度脉冲(Breath Luminance Pulse,吸气胸腔扩张时身体微亮+呼气收缩时微暗,与body_scale_x同步让呼吸不仅影响形状还影响光照)+手部镜面高光点(Hand Specular Highlight,手掌左上1px亮白点模拟球形表面镜面反射,让手从flat色块变为有3D体积感的球形)
@@ -4840,53 +4837,6 @@ class CharacterEngine:
             if 0 <= _sw_y + 1 < H and 0 <= _sw_x < W and canvas[_sw_y + 1][_sw_x][3] == 0:
                 canvas[_sw_y + 1][_sw_x] = (*_sw_color, _sw_alpha - 40)  # 尾巴部分（更透明）
 
-        # ---- v0.3.82: 奔跑运动拖影条纹(Run Motion Blur Streaks) — 奔跑时角色后方水平渐隐条纹增强速度感 ----
-        # 原理：在动画和游戏中，运动模糊(motion blur)是表现高速运动的基本技法。
-        #       当物体快速移动时，人眼/相机无法清晰捕捉每一帧，产生拖尾的模糊条纹。
-        #       在像素美术中，用2-3条半透明的水平线段从角色身体向后延伸即可模拟。
-        #       与v0.3.74攻击速度线的区别：速度线是从攻击点向外辐射的集中线（表现瞬间爆发力），
-        #       而运动拖影是从角色身体向后延伸的水平条纹（表现持续高速运动）。
-        #       参考案例：Sonic the Hedgehog奔跑时的蓝色拖影、Celeste奔跑时的残像条纹。
-        #       条纹位于身体中段和腿部，不干扰头部可读性。
-        #       条纹长度随run phase变化（着地帧最长=最大速度），alpha与速度成正比。
-        # 实现：run动画时，从身体和腿部中心向后（负X方向）绘制3条水平条纹，
-        #       条纹宽3-5px，高度1px，alpha=40-70，颜色为accent色的淡化版。
-        if anim == "run":
-            _mb_nframes = 6
-            _mb_t = frame_idx / max(1, _mb_nframes - 1)
-            # 跑步相位：着地帧(body_dy最低)时拖影最长
-            _mb_phase = _mb_t * math.pi * 2
-            _mb_speed = abs(math.sin(_mb_phase * 2))  # 步态速度感
-            if _mb_speed > 0.3:
-                _mb_alpha_base = int(50 * _mb_speed)
-                _mb_streak_len = int(3 + _mb_speed * 3)  # 3-6px
-                # 拖影颜色：accent色淡化版（低饱和度，不干扰主角色）
-                _mb_color = (
-                    min(255, accent[0] // 2 + 60),
-                    min(255, accent[1] // 2 + 60),
-                    min(255, accent[2] // 2 + 60)
-                )
-                # 3条条纹：分别在躯干上、躯干下、腿部
-                _mb_y_positions = [
-                    body_top + body_draw_h // 4 + body_dy,  # 躯干上部
-                    body_top + body_draw_h * 3 // 4 + body_dy,  # 躯干下部
-                    leg_top + leg_h // 2,  # 腿部中段
-                ]
-                # 条纹起点：身体左侧向后延伸（运动方向的反方向）
-                _mb_start_x = cx + body_dx - body_draw_w // 2 - ps
-                for _mb_i, _mb_y in enumerate(_mb_y_positions):
-                    # 每条条纹的长度和alpha递减
-                    _mb_len = max(1, _mb_streak_len - _mb_i)
-                    _mb_alpha = max(10, _mb_alpha_base - _mb_i * 12)
-                    for _mb_sx in range(max(0, _mb_start_x - _mb_len), _mb_start_x):
-                        if 0 <= _mb_y < H and 0 <= _mb_sx < W:
-                            if canvas[_mb_y][_mb_sx][3] == 0:  # 不覆盖角色像素
-                                # 条纹alpha从起点(最亮)到末端(最淡)渐变
-                                _mb_dist = (_mb_start_x - _mb_sx) / max(1, _mb_len)
-                                _mb_px_alpha = int(_mb_alpha * (1.0 - _mb_dist * 0.6))
-                                if _mb_px_alpha > 5:
-                                    canvas[_mb_y][_mb_sx] = (*_mb_color, _mb_px_alpha)
-
         # ---- v0.3.69: 腋窝层间投射阴影(Axilla Inter-Part Cast Shadow) — 手臂在躯干上的定向投影 ----
         # 原理：真实光照中，抬起的物体会在其下方表面投射阴影。手臂与躯干之间
         #       形成的腋窝区域应该比周围更暗，因为来自主光源（左上方）的光线
@@ -5807,59 +5757,6 @@ class CharacterEngine:
                             if 0 <= _rgy < H and 0 <= _rgx < W and _rga > 5:
                                 if canvas[_rgy][_rgx][3] < _rga:
                                     canvas[_rgy][_rgx] = (_rp_r, _rp_g, _rp_b, _rga)
-
-            # ---- v0.3.82: 施法蓄力能量螺旋(Cast Charge Energy Spiral) — 蓄力阶段螺旋上升的能量光点 ----
-            # 原理：在经典RPG施法系统中(尤其是日式RPG如Final Fantasy/Dragon Quest)，
-            #       施法蓄力时能量不是直线上升（v0.3.75的升腾粒子），而是沿螺旋路径向法杖尖端汇聚，
-            #       这模拟了磁场中的带电粒子回旋运动（洛伦兹力）——魔法能量被施法者的意念
-            #       "束缚"在旋转轨道上，逐渐加速收紧向释放点汇聚。
-            #       与v0.3.75升腾粒子的区别：升腾粒子是直线上抛的松散光点（模拟自然上升热流），
-            #       而螺旋光点是沿精确螺旋路径运动的有组织能量（模拟受控能量凝聚）。
-            #       两者同时存在时形成"自然+受控"的双层视觉效果，让蓄力阶段更丰富。
-            # 实现：在cast蓄力阶段(t<0.43)，从身体两侧生成4颗accent色光点，
-            #       沿阿基米德螺旋线向法杖/武器尖端汇聚，半径逐渐收紧，角速度逐渐加快。
-            if anim == "cast":
-                _cs_nframes = 7
-                _cs_t = frame_idx / max(1, _cs_nframes - 1)
-                if _cs_t < 0.43:  # 仅在蓄力阶段
-                    _cs_charge = _cs_t / 0.43  # 0→1 蓄力进度
-                    # 螺旋中心：武器尖端位置（蓄力的目标汇聚点）
-                    _cs_target_x = tip_x if weapon in ("staff", "sword", "dagger", "bow") else cx + body_w // 2
-                    _cs_target_y = min(H - 2, weapon_base_y)
-                    # 螺旋起始中心：身体中部（能量的初始来源）
-                    _cs_source_x = cx + body_dx
-                    _cs_source_y = body_top + body_h // 2
-                    # 当前插值中心：从身体中部逐渐移向武器尖端
-                    _cs_center_x = int(_cs_source_x + (_cs_target_x - _cs_source_x) * _cs_charge * 0.7)
-                    _cs_center_y = int(_cs_source_y + (_cs_target_y - _cs_source_y) * _cs_charge * 0.7)
-                    # 螺旋半径：从大到小（能量收紧）
-                    _cs_spiral_r = int(8 * (1.0 - _cs_charge * 0.7))  # 8→2.4px
-                    _cs_spiral_r = max(2, _cs_spiral_r)
-                    # 4颗螺旋光点
-                    _cs_n_points = 4
-                    _cs_color = (min(255, accent[0] + 70), min(255, accent[1] + 60), min(255, accent[2] + 45))
-                    for _csi in range(_cs_n_points):
-                        # 每颗光点的相位：均匀分布 + 随蓄力增加角速度（越快越紧密）
-                        _cs_base_angle = _csi * (2 * math.pi / _cs_n_points)
-                        # 角速度随蓄力增加：蓄力越深旋转越快（模拟加速度）
-                        _cs_rot_speed = 2.0 + _cs_charge * 3.0  # 2→5圈/周期
-                        _cs_angle = _cs_base_angle + frame_idx * _cs_rot_speed * 0.8
-                        # 螺旋半径随光点索引微变（避免4点完全同圆）
-                        _cs_pt_r = _cs_spiral_r + (_csi % 2) * 2 - 1  # ±1px变化
-                        _cs_pt_x = int(_cs_center_x + _cs_pt_r * math.cos(_cs_angle))
-                        _cs_pt_y = int(_cs_center_y + _cs_pt_r * math.sin(_cs_angle))
-                        # 透明度：蓄力越深越亮（能量越凝聚越明显）
-                        _cs_alpha = int(60 + 80 * _cs_charge)
-                        if 0 <= _cs_pt_y < H and 0 <= _cs_pt_x < W and _cs_alpha > 10:
-                            if canvas[_cs_pt_y][_cs_pt_x][3] == 0:
-                                canvas[_cs_pt_y][_cs_pt_x] = (*_cs_color, _cs_alpha)
-                            # 1px光晕
-                            for _cs_hdx, _cs_hdy in [(1,0),(-1,0),(0,1),(0,-1)]:
-                                _cs_hx, _cs_hy = _cs_pt_x + _cs_hdx, _cs_pt_y + _cs_hdy
-                                _cs_ha = int(_cs_alpha * 0.3)
-                                if 0 <= _cs_hy < H and 0 <= _cs_hx < W and _cs_ha > 5:
-                                    if canvas[_cs_hy][_cs_hx][3] == 0:
-                                        canvas[_cs_hy][_cs_hx] = (*_cs_color, _cs_ha)
 
             # ---- v0.3.78: 施法释放能量爆发(Cast Release Energy Burst) — 施法释放时刻从武器尖端径向爆发accent色能量冲击波 ----
             # 原理：在RPG/动作游戏的施法系统中，"释放"(Release)是蓄力→释放→恢复三阶段中最具
