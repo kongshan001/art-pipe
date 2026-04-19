@@ -1,5 +1,6 @@
 """
 ArtPipe 角色生成引擎 v0.3
+v0.3.78: 防御格挡冲击闪光(Defend Block Impact Flash,格挡瞬间t≈0.25从武器/盾牌位置爆发accent色扩展光环+4颗火花粒子提供防御冲击反馈)+施法释放能量爆发(Cast Release Energy Burst,施法释放时刻t≈0.43从武器尖端径向爆发accent色能量冲击波强化魔法释放感)
 v0.3.76: 呼吸亮度脉冲(Breath Luminance Pulse,吸气胸腔扩张时身体微亮+呼气收缩时微暗,与body_scale_x同步让呼吸不仅影响形状还影响光照)+手部镜面高光点(Hand Specular Highlight,手掌左上1px亮白点模拟球形表面镜面反射,让手从flat色块变为有3D体积感的球形)
 v0.3.75: 施法升腾魔法粒子(Cast Rising Aura Particles,蓄力阶段身体两侧accent色光粒向上飘升形成能量柱效果)+地面阴影水平跟随(Shadow Body-DX Follow,阴影中心跟随body_dx偏移让水平位移有物理基础)
 v0.3.73: 瞳孔注视漂移(Pupil Gaze Drift,idle/walk时瞳孔/高光±1px正弦漂移模拟微saccade让角色活着感)+跳跃落地冲击扬尘(Jump Landing Impact Dust,jump落地帧8颗冲击扬尘粒子±6px扩散比walk扬尘更剧烈提供着陆反馈)
@@ -4692,6 +4693,61 @@ class CharacterEngine:
                                 if _r_alpha > 8 and canvas[_ry][_rx][3] == 0:
                                     canvas[_ry][_rx] = (_ring_r, _ring_g, _ring_b, _r_alpha)
 
+            # ---- v0.3.78: 防御格挡冲击闪光(Defend Block Impact Flash) — 格挡瞬间accent色扩展光环+火花粒子 ----
+            # 原理：在格斗游戏(Street Fighter/Guilty Gear)和动作游戏(Dark Souls/Elden Ring)中，
+            #       角色成功格挡时会产生明显的视觉反馈——一道从盾牌/武器位置爆发的闪光，
+            #       让玩家直观感受到"格挡成功"的冲击力。这是游戏打击感(feedback)设计的核心要素。
+            #       与v0.3.53防御武器微光互补：微光是持续的弱发光，而冲击闪光是瞬间的强烈爆发。
+            # 实现：在defend动画的格挡转换点(t≈0.25)触发，从武器/盾牌位置(cx+body_w//2, body_top+body_h//3)
+            #       产生：(1)扩展光环：accent色圆环，半径3→10px，alpha随扩展衰减
+            #            (2)4颗accent色火花粒子，径向飞溅，每颗带1px光晕
+            if anim == "defend":
+                _db_nframes = 5
+                _db_t = frame_idx / max(1, _db_nframes - 1)
+                # 格挡闪光在 t≈0.25 触发（进入稳守姿态的第一帧），之后衰减
+                if 0.2 <= _db_t <= 0.6:
+                    _db_flash_raw = (_db_t - 0.2) / 0.4  # 0→1 格挡后扩展
+                    _db_flash_fade = 1.0 - _db_flash_raw  # 1→0 随扩展衰减
+                    # 闪光中心：武器/盾牌位置（身体右上方）
+                    _db_flash_cx = cx + body_w // 2 + arm_w
+                    _db_flash_cy = body_top + body_h // 3 + body_dy
+                    # (1) 扩展光环：accent色圆环
+                    _db_ring_r = int(3 + _db_flash_raw * 8)  # 3→11px
+                    _db_ring_w = max(1, int(2 * _db_flash_fade))  # 2→1px宽度
+                    _db_ring_alpha = int(140 * _db_flash_fade)  # 随扩展衰减
+                    _db_ring_color = (min(255, accent[0] + 50), min(255, accent[1] + 45), min(255, accent[2] + 35))
+                    if _db_ring_alpha > 10:
+                        for _dbry in range(max(0, _db_flash_cy - _db_ring_r - _db_ring_w),
+                                           min(H, _db_flash_cy + _db_ring_r + _db_ring_w + 1)):
+                            for _dbrx in range(max(0, _db_flash_cx - _db_ring_r - _db_ring_w),
+                                               min(W, _db_flash_cx + _db_ring_r + _db_ring_w + 1)):
+                                _db_dist = math.sqrt((_dbrx - _db_flash_cx)**2 + (_dbry - _db_flash_cy)**2)
+                                if abs(_db_dist - _db_ring_r) <= _db_ring_w:
+                                    _db_falloff = 1.0 - abs(_db_dist - _db_ring_r) / max(1, _db_ring_w)
+                                    _db_alpha = int(_db_ring_alpha * _db_falloff)
+                                    if _db_alpha > 6 and canvas[_dbry][_dbrx][3] == 0:
+                                        canvas[_dbry][_dbrx] = (*_db_ring_color, _db_alpha)
+                    # (2) 4颗火花粒子，径向飞溅
+                    _db_spark_color = (min(255, accent[0] + 80), min(255, accent[1] + 70), min(255, accent[2] + 50))
+                    for _db_si in range(4):
+                        # 4颗粒子均匀分布在360°（每90°一颗）
+                        _db_spark_angle = _db_si * math.pi / 2 + 0.4  # 偏移0.4rad避免完全对称
+                        _db_spark_dist = int(2 + _db_flash_raw * 7)  # 2→9px飞溅距离
+                        _db_spark_px = _db_flash_cx + int(_db_spark_dist * math.cos(_db_spark_angle))
+                        _db_spark_py = _db_flash_cy + int(_db_spark_dist * math.sin(_db_spark_angle))
+                        _db_spark_alpha = int(180 * _db_flash_fade * max(0.4, 1.0 - _db_si * 0.1))
+                        if (0 <= _db_spark_py < H and 0 <= _db_spark_px < W
+                                and _db_spark_alpha > 12 and canvas[_db_spark_py][_db_spark_px][3] == 0):
+                            canvas[_db_spark_py][_db_spark_px] = (*_db_spark_color, _db_spark_alpha)
+                            # 1px光晕
+                            for _db_hdx, _db_hdy in [(1,0),(-1,0),(0,1),(0,-1)]:
+                                _db_hx = _db_spark_px + _db_hdx
+                                _db_hy = _db_spark_py + _db_hdy
+                                _db_ha = int(_db_spark_alpha * 0.35)
+                                if (0 <= _db_hy < H and 0 <= _db_hx < W
+                                        and _db_ha > 5 and canvas[_db_hy][_db_hx][3] == 0):
+                                    canvas[_db_hy][_db_hx] = (*_db_spark_color, _db_ha)
+
         # ---- v0.3.69: 腋窝层间投射阴影(Axilla Inter-Part Cast Shadow) — 手臂在躯干上的定向投影 ----
         # 原理：真实光照中，抬起的物体会在其下方表面投射阴影。手臂与躯干之间
         #       形成的腋窝区域应该比周围更暗，因为来自主光源（左上方）的光线
@@ -5612,6 +5668,77 @@ class CharacterEngine:
                             if 0 <= _rgy < H and 0 <= _rgx < W and _rga > 5:
                                 if canvas[_rgy][_rgx][3] < _rga:
                                     canvas[_rgy][_rgx] = (_rp_r, _rp_g, _rp_b, _rga)
+
+            # ---- v0.3.78: 施法释放能量爆发(Cast Release Energy Burst) — 施法释放时刻从武器尖端径向爆发accent色能量冲击波 ----
+            # 原理：在RPG/动作游戏的施法系统中，"释放"(Release)是蓄力→释放→恢复三阶段中最具
+            #       视觉冲击力的瞬间。经典案例如Final Fantasy系列的黑魔法释放时从法杖爆发光球，
+            #       Genshin Impact的元素爆发从武器尖端径向扩散能量波。
+            #       这是施法动画的"money shot"——玩家等待蓄力后最期待看到的高潮瞬间。
+            #       与现有施法效果形成完整三层结构：
+            #       地面魔法阵(v0.3.52,根基)→升腾粒子(v0.3.75,能量流动)→释放爆发(本次,能量释放)。
+            # 实现：在cast释放时刻(t≈0.43)，从武器尖端(tip_x,tip_y)位置产生径向能量爆发：
+            #       (1)扩展能量环：accent色圆环，半径4→14px，alpha峰值180快速衰减
+            #       (2)6颗方向性能量碎片，沿主方向(右下±30°)散射，模拟定向施放
+            #       (3)中心flash：1帧强烈中心亮点(alpha=200)强化爆发感
+            if anim == "cast":
+                _crb_nframes = 7
+                _crb_t = frame_idx / max(1, _crb_nframes - 1)
+                # 释放时刻在 t≈0.43（第3帧），效果持续到 t≈0.65
+                if 0.35 <= _crb_t <= 0.65:
+                    _crb_raw = (_crb_t - 0.35) / 0.30  # 0→1 扩展进度
+                    _crb_fade = 1.0 - _crb_raw  # 1→0 衰减
+                    # 爆发中心：武器尖端位置（施法时法杖/武器高举）
+                    _crb_cx = tip_x if weapon in ("staff", "sword", "dagger", "bow") else cx + body_w // 2
+                    _crb_cy = min(H - 2, weapon_base_y)  # 武器上端位置
+                    _crb_color = (min(255, accent[0] + 60), min(255, accent[1] + 50), min(255, accent[2] + 40))
+                    # (1) 中心flash：第1帧强烈中心亮点
+                    if _crb_raw < 0.3:
+                        _crb_flash_alpha = int(200 * (1.0 - _crb_raw / 0.3))
+                        if _crb_flash_alpha > 15 and 0 <= _crb_cy < H and 0 <= _crb_cx < W:
+                            if canvas[_crb_cy][_crb_cx][3] == 0:
+                                canvas[_crb_cy][_crb_cx] = (*_crb_color, _crb_flash_alpha)
+                            # 中心光晕2px
+                            for _cf_dx, _cf_dy, _cf_m in [(1,0,0.5),(-1,0,0.5),(0,1,0.5),(0,-1,0.5),
+                                                            (1,1,0.25),(-1,1,0.25),(1,-1,0.25),(-1,-1,0.25)]:
+                                _cf_x, _cf_y = _crb_cx + _cf_dx, _crb_cy + _cf_dy
+                                _cf_a = int(_crb_flash_alpha * _cf_m)
+                                if 0 <= _cf_y < H and 0 <= _cf_x < W and _cf_a > 8:
+                                    if canvas[_cf_y][_cf_x][3] == 0:
+                                        canvas[_cf_y][_cf_x] = (*_crb_color, _cf_a)
+                    # (2) 扩展能量环
+                    _crb_ring_r = int(4 + _crb_raw * 10)  # 4→14px
+                    _crb_ring_w = max(1, int(2 * _crb_fade))  # 2→1px宽度
+                    _crb_ring_alpha = int(160 * _crb_fade)
+                    if _crb_ring_alpha > 10:
+                        for _cry in range(max(0, _crb_cy - _crb_ring_r - _crb_ring_w),
+                                          min(H, _crb_cy + _crb_ring_r + _crb_ring_w + 1)):
+                            for _crx in range(max(0, _crb_cx - _crb_ring_r - _crb_ring_w),
+                                              min(W, _crb_cx + _crb_ring_r + _crb_ring_w + 1)):
+                                _cr_dist = math.sqrt((_crx - _crb_cx)**2 + (_cry - _crb_cy)**2)
+                                if abs(_cr_dist - _crb_ring_r) <= _crb_ring_w:
+                                    _cr_fo = 1.0 - abs(_cr_dist - _crb_ring_r) / max(1, _crb_ring_w)
+                                    _cr_a = int(_crb_ring_alpha * _cr_fo)
+                                    if _cr_a > 6 and canvas[_cry][_crx][3] == 0:
+                                        canvas[_cry][_crx] = (*_crb_color, _cr_a)
+                    # (3) 6颗方向性能量碎片，沿主要方向散射
+                    _crb_frag_color = (min(255, accent[0] + 90), min(255, accent[1] + 80), min(255, accent[2] + 60))
+                    for _crb_fi in range(6):
+                        # 6颗碎片均匀分布，偏移角度增加自然感
+                        _crb_f_angle = _crb_fi * math.pi / 3 + 0.3
+                        _crb_f_dist = int(3 + _crb_raw * 12)  # 3→15px飞溅距离
+                        _crb_f_px = _crb_cx + int(_crb_f_dist * math.cos(_crb_f_angle))
+                        _crb_f_py = _crb_cy + int(_crb_f_dist * math.sin(_crb_f_angle))
+                        _crb_f_alpha = int(190 * _crb_fade * max(0.35, 1.0 - _crb_fi * 0.08))
+                        if (0 <= _crb_f_py < H and 0 <= _crb_f_px < W
+                                and _crb_f_alpha > 10 and canvas[_crb_f_py][_crb_f_px][3] == 0):
+                            canvas[_crb_f_py][_crb_f_px] = (*_crb_frag_color, _crb_f_alpha)
+                            # 1px光晕
+                            for _cf_hdx, _cf_hdy in [(1,0),(-1,0),(0,1),(0,-1)]:
+                                _cf_hx, _cf_hy = _crb_f_px + _cf_hdx, _crb_f_py + _cf_hdy
+                                _cf_ha = int(_crb_f_alpha * 0.3)
+                                if (0 <= _cf_hy < H and 0 <= _cf_hx < W
+                                        and _cf_ha > 5 and canvas[_cf_hy][_cf_hx][3] == 0):
+                                    canvas[_cf_hy][_cf_hx] = (*_crb_frag_color, _cf_ha)
 
         # ---- v0.3.13: 地面阴影投射 — 椭圆形渐变阴影增强空间感 ----
         # 在角色脚底位置绘制一个椭圆形半透明阴影，模拟地面投影
