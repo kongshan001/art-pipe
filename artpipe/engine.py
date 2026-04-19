@@ -3474,19 +3474,49 @@ class CharacterEngine:
                     canvas[_re_y][_ex] = (*_elbow_shadow_color, 255)
 
         # ---- 类型专属配件 ----
-        # 战士：盾牌
+        # 战士：盾牌（v0.3.74: 金属法线着色升级 Metal Normal Shading）
+        # 将扁平纯色盾牌升级为椭球法线光照+金属镜面高光+边缘高光环+深色边框
+        # 原理：与v0.3.34身体椭球法线着色相同技术，盾牌近似为圆形平面，
+        #       法线点积光源方向(-0.5,-0.7)产生左上亮右下暗的3D凸面效果，
+        #       加上边缘高光和中心十字纹饰的高光点模拟金属抛光反射
         if type_cfg.get("has_shield"):
             shield_x = cx - body_w//2 - arm_w - ps*2
             shield_cy = (body_top + body_bot) // 2
             shield_r = max(ps*2, arm_w + ps)
+            # v0.3.74: 预计算盾牌金属色阶
+            _shld_metal = _cool_shift(accent, 12)  # 偏冷金属质感
+            _shld_highlight = _warm_shift(accent, 25)  # 暖色高光
+            _shld_dark = _cool_shift(accent, 20)  # 冷色暗面
+            _shld_spec = (min(255, accent[0]+60), min(255, accent[1]+55), min(255, accent[2]+45))  # 镜面反射点
             for y in range(max(0, shield_cy - shield_r), min(H, shield_cy + shield_r)):
                 for x in range(max(0, shield_x - shield_r), min(W, shield_x + shield_r)):
                     sdx, sdy = x - shield_x, y - shield_cy
-                    if sdx*sdx + sdy*sdy <= shield_r*shield_r:
-                        canvas[y][x] = (*accent, 255)
-                        # 盾牌十字纹饰
+                    dist_sq = sdx*sdx + sdy*sdy
+                    if dist_sq <= shield_r*shield_r:
+                        # v0.3.74: 椭球法线光照（与v0.3.34/v0.3.21b相同的左上光源）
+                        _s_nx = sdx / max(1, shield_r)
+                        _s_ny = sdy / max(1, shield_r)
+                        _s_dot = _s_nx * (-0.5) + _s_ny * (-0.7)  # 光源方向(-0.5,-0.7)
+                        _s_dot = max(-1.0, min(1.0, _s_dot))
+                        # 根据法线点积选择色阶：亮面/中间面/暗面
+                        if _s_dot > 0.3:
+                            _sc = _shld_highlight  # 左上受光面
+                        elif _s_dot > -0.2:
+                            _sc = _shld_metal  # 中间面（金属色）
+                        else:
+                            _sc = _shld_dark  # 右下暗面
+                        canvas[y][x] = (*_sc, 255)
+                        # 盾牌十字纹饰（高亮色）
                         if abs(sdx) <= ps or abs(sdy) <= ps:
-                            canvas[y][x] = (min(255, accent[0]+50), min(255, accent[1]+50), min(255, accent[2]+50), 255)
+                            canvas[y][x] = (min(255, _sc[0]+40), min(255, _sc[1]+35), min(255, _sc[2]+30), 255)
+                        # v0.3.74: 中心镜面高光点（仅左上象限）
+                        if abs(sdx) <= ps and sdy <= 0 and abs(sdy) <= ps:
+                            canvas[y][x] = (*_shld_spec, 255)
+                        # v0.3.74: 边缘高光环（距边缘1px的轮廓高光，模拟金属边缘反光）
+                        _s_edge_dist = shield_r - int(dist_sq**0.5)
+                        if _s_edge_dist <= 1 and _s_dot > 0:
+                            _s_rim = min(255, _sc[0]+20), min(255, _sc[1]+18), min(255, _sc[2]+15)
+                            canvas[y][x] = (*_s_rim, 255)
 
         # 法师：长袍下摆（逐渐加宽的袍角）
         if type_cfg.get("has_robe"):
@@ -4414,6 +4444,47 @@ class CharacterEngine:
                         if canvas[_jdust_py][_jdust_px][3] == 0:
                             # 落地扬尘色：比walk扬尘略亮（偏白灰），模拟高速冲击扬起的细尘
                             canvas[_jdust_py][_jdust_px] = (200, 190, 170, _jdust_alpha)
+        
+        # v0.3.74: 攻击速度线（Attack Speed Lines）— 攻击挥出阶段角色身后对角线速度线
+        # 原理：格斗游戏和漫画的经典视觉技法"集中线/速度线"(speed lines)，
+        #       在角色高速运动的反方向绘制放射状细线，瞬间传达速度感和力度感。
+        #       Street Fighter/Guilty Gear系列大量使用这种技法增强打击感。
+        #       速度线只在挥出阶段(t>0.4)出现，透明度随t递增后递减，
+        #       3-5条对角线从角色左后方（远离攻击方向的对侧）向外辐射，
+        #       颜色使用半透明白/灰色，不干扰角色本身的可读性。
+        if anim == "attack":
+            _spd_nframes = 6  # attack动画总帧数
+            _spd_t = frame_idx / max(1, _spd_nframes - 1)
+            if _spd_t > 0.35 and _spd_t < 0.85:
+                # 速度线强度：中间最强(t≈0.6)，两端渐弱，sin钟形曲线
+                _spd_intensity = math.sin((_spd_t - 0.35) / 0.5 * math.pi)
+                _spd_intensity = max(0.0, min(1.0, _spd_intensity))
+                if _spd_intensity > 0.2:
+                    # 速度线数量：3-5条，根据强度调整
+                    _spd_count = 3 + int(_spd_intensity * 2)
+                    # 速度线起点：角色左后方区域（攻击方向为右侧/武器侧）
+                    _spd_origin_x = cx - body_draw_w - ps * 2
+                    _spd_origin_y = body_top + body_draw_h // 3
+                    _spd_alpha_base = int(55 * _spd_intensity)
+                    _spd_seed_base = frame_idx * 17 + 7
+                    for _sli in range(_spd_count):
+                        # 每条线的方向：从左后方向左上方/左下方辐射
+                        _sli_angle_offset = (_spd_seed_base + _sli * 23) % 60 - 30  # -30到+30度变化
+                        _sli_len = 3 + ((_spd_seed_base + _sli * 7) % 4)  # 3-6px长度
+                        # 方向向量：左后方→左外方（攻击的反方向）
+                        _sli_dx = -1 - abs(_sli_angle_offset) // 30  # -1或-2
+                        _sli_dy = (_sli_angle_offset) // 15  # -2到+2
+                        _sli_start_x = _spd_origin_x - _sli * 2
+                        _sli_start_y = _spd_origin_y + (_sli - _spd_count // 2) * 3
+                        # 透明度递减：第一条最亮，后面的渐淡
+                        _sli_alpha = max(10, _spd_alpha_base - _sli * 12)
+                        # 绘制速度线（逐像素Bresenham式）
+                        for _sl_step in range(_sli_len):
+                            _sl_px = _sli_start_x + _sl_step * _sli_dx
+                            _sl_py = _sli_start_y + _sl_step * _sli_dy
+                            if 0 <= _sl_py < H and 0 <= _sl_px < W:
+                                if canvas[_sl_py][_sl_px][3] == 0:  # 不覆盖角色像素
+                                    canvas[_sl_py][_sl_px] = (220, 215, 205, _sli_alpha)
         
         # v0.3.53: 受击冲击粒子（Hurt Impact Sparks）— 受击时飞溅的小火花/碎片粒子
         # 原理：格斗游戏和动作游戏的经典反馈特效，角色被击中时从受击点飞出

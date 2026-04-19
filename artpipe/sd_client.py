@@ -56,17 +56,30 @@ class AIGenerator:
     """AI图像生成器，支持多后端"""
 
     # 游戏角色专用的提示词模板
+    # v0.4: 全面增强面部质量 — 每种风格加入详细面部描述
     STYLE_PROMPTS = {
         "pixel": "pixel art, retro game sprite, 16-bit style, clean pixels, no anti-aliasing, "
                  "flat colors, crisp edges, perfectly aligned pixel grid",
-        "cartoon": "cartoon style, thick outlines, flat colors, cute proportions, game character, "
-                   "smooth cel-shading, vibrant palette",
-        "anime": "anime style, JRPG character, cel-shaded, vibrant colors, detailed, "
-                 "beautiful face, dynamic pose, high quality illustration",
-        "western": "western cartoon style, bold shapes, comic book style, game character, "
-                   "strong silhouette, clear read",
-        "dark": "dark fantasy style, gothic, dramatic lighting, moody atmosphere, game character, "
-                "high contrast, rich shadows, ominous aura",
+        "cartoon": "cartoon game character style, thick clean outlines, flat vibrant colors, "
+                   "cute expressive proportions, smooth cel-shading, "
+                   "detailed face with large sparkly eyes, defined eyebrows, small nose, expressive mouth, "
+                   "clean facial features, rosy cheeks, bright highlights in eyes",
+        "anime": "anime JRPG character official art, cel-shaded with soft gradients, "
+                 "vibrant saturated colors, crisp clean linework, "
+                 "highly detailed beautiful face, large detailed iris with limbal ring and light reflections, "
+                 "long eyelashes, well-defined nose bridge, soft lips, "
+                 "perfectly symmetrical face, hair framing face naturally, "
+                 "professional game studio quality illustration",
+        "western": "western comic book game character, bold graphic shapes, "
+                   "strong confident silhouette, dynamic powerful stance, "
+                   "detailed face with sharp jawline, defined cheekbones, intense focused eyes, "
+                   "strong brow ridge, angular features, clean ink lines, "
+                   "halftone shading, bold color palette, professional game concept art",
+        "dark": "dark fantasy game character, dramatic chiaroscuro lighting, "
+                "gothic atmosphere, deep rich shadows, high contrast rim lighting, "
+                "intense piercing eyes with subtle glow, sharp angular face, "
+                "gaunt cheekbones, brooding expression, strands of hair catching light, "
+                "ominous aura, dark moody color palette, professional dark fantasy illustration",
     }
 
     POSE_PROMPTS = {
@@ -82,59 +95,79 @@ class AIGenerator:
     }
 
     TYPE_PROMPTS = {
-        # v0.3.24: 增强角色描述 — 添加装备细节、材质关键词、视觉特征
+        # v0.4: 全面增强面部质量 — 每种角色加入详细面部特征
         "warrior": "warrior knight in heavy plate armor with intricate engravings, "
                    "wielding a broadsword and round shield, battle-ready stance, "
                    "chainmail visible under armor joints, leather belt with pouches, "
                    "steel gauntlets and greaves, heavy steel-toed armored boots with iron buckles, "
-                   "heroic determined expression, "
+                   "handsome masculine face with strong jawline and cheekbones, "
+                   "piercing steel-blue eyes with determined heroic gaze, "
+                   "short windswept brown hair, clean-shaven, "
                    "battle-scarred armor with subtle dents and scratches",
         "mage": "wizard mage in layered flowing robes with star patterns, "
                 "holding a gnarled wooden staff topped with a glowing crystal orb, "
                 "arcane symbols floating around hands, runic embroidery on sleeves, "
                 "leather spell component pouch on belt, pointed wide-brim hat, "
                 "pointed leather boots with silver buckle clasps visible below robe hem, "
+                "elegant androgynous face with high cheekbones, "
+                "large luminous violet eyes with swirling magical reflections, "
+                "long flowing silver-white hair, serene mysterious expression, "
                 "mystical glowing aura, wisps of magical energy",
         "archer": "archer ranger with a recurve bow and quiver of arrows, "
                   "wearing a hooded forest cloak over leather armor, "
                   "agile athletic build, bracer arm guards, "
                   "utility belt with hunting tools, leaf-shaped arrow fletching, "
                   "lace-up leather hunting boots with fur trim at the ankle, "
+                  "bright attentive face with sharp emerald-green eyes, "
+                  "auburn hair in a practical side ponytail, sun-kissed skin, "
+                  "confident focused expression with slight smile, "
                   "nature-inspired decorative feathers and beads",
         "rogue": "rogue assassin in fitted dark leather armor with buckle straps, "
-                 "dual curved daggers with ornate hilts, hooded cowl casting shadow over face, "
+                 "dual curved daggers with ornate hilts, hooded cowl, "
                  "bandolier of throwing knives, soft-soled boots, "
                  "utility pouches and lockpicks visible on belt, "
-                 "shadow blending dark cloak with tattered edges",
+                 "sharp angular face partially shadowed by hood, "
+                 "narrow amber-gold eyes with cunning predatory gaze, "
+                 "messy jet-black hair falling across forehead, "
+                 "wry knowing smirk, shadow blending dark cloak",
         "healer": "healer cleric in pristine white and gold vestments, "
                   "holding a sacred tome with glowing pages, "
                   "divine halo of soft light above head, holy symbol pendant, "
-                  "sash with embroidered sigils, gentle compassionate expression, "
+                  "sash with embroidered sigils, "
+                  "gentle radiant face with warm compassionate pink eyes, "
+                  "long golden-blonde hair in braids with white ribbon, "
+                  "soft rosy cheeks, kind caring smile, porcelain skin, "
                   "healing aura of warm golden particles",
         "monster": "fantasy monster creature with textured scaly hide, "
-                   "glowing red eyes with slit pupils, curved horns and sharp fangs, "
+                   "glowing crimson eyes with slit pupils and inner fire, "
+                   "curved obsidian horns and razor-sharp fangs, "
                    "muscular imposing frame, bone armor plates growing from body, "
-                   "detailed skin texture with veins and scars, "
+                   "detailed skin texture with veins and glowing cracks, "
                    "intimidating boss enemy with dramatic presence, "
-                   "elemental energy radiating from claws",
+                   "elemental energy radiating from claws, smoke wisps",
         "npc": "friendly NPC villager in simple but well-crafted clothing, "
-               "approachable warm smile, carrying a trade item or tool, "
+               "approachable warm face with crinkling smile lines around eyes, "
+               "soft brown eyes full of warmth and kindness, "
+               "wheat-colored tousled hair, sun-weathered rosy cheeks, "
+               "carrying a trade item or tool, "
                "leather apron over cotton shirt, sensible boots, "
-               "pouch belt with personal belongings, "
-               "natural relaxed posture, wholesome appearance",
-        # v0.3.17: 新增骑士和吟游诗人的 AI 提示词
+               "pouch belt with personal belongings, natural relaxed posture",
         "knight": "holy paladin knight in mirror-polished full plate armor, "
                   "great helm with flowing feather plume, "
                   "tower shield emblazoned with sacred cross, blessed longsword, "
                   "tabard over armor with heraldic emblem, chainmail aventail, "
-                  "imposing heavy armored silhouette, divine protector aura, "
+                  "noble chiseled face with piercing ice-blue eyes, "
+                  "short-cropped platinum blonde hair, strong Roman nose, "
+                  "stoic righteous expression, divine light catching hair, "
                   "polished metal reflections and gold filigree details",
         "bard": "bard minstrel in a colorful patchwork troubadour outfit, "
                 "carrying an ornately carved lute with inlay details, "
                 "pointed hat with dramatic feather plume, "
                 "ruffled collar and embroidered vest, fingerless gloves, "
-                "charming confident expression, musical notes floating nearby, "
-                "artistic flair with colorful ribbons and accessories",
+                "charismatic lively face with mischievous twinkling hazel eyes, "
+                "long wavy chestnut hair flowing freely, confident playful grin, "
+                "gold earring, artistic flair with colorful ribbons, "
+                "musical notes floating nearby",
     }
 
     # v0.3.24: 配色方案模板 — 增强材质描述和质感关键词
@@ -172,16 +205,19 @@ class AIGenerator:
                 "colorful silk ribbons in teal, gold, and crimson",
     }
 
-    # 负面提示词：精简版 — 聚焦对 Flux/Pollinations 最有效的排除项
-    # v0.3.19: 从 ~130 token 精简至 ~50 token，去除冗余项，聚焦核心质量排除
-    # Flux 模型对负面提示词响应有限，优先保留最常见的质量问题
+    # v0.4: 增强负面提示词 — 重点排除面部模糊/变形问题
     NEGATIVE_PROMPT = (
         "3d render, realistic, photograph, lowres, blurry, bad anatomy, "
         "deformed, disfigured, extra limbs, bad hands, text, watermark, "
         "multiple characters, partial body, cropped, out of frame, "
         "gradient background, complex background, "
         "asymmetric face, cross-eyed, awkward pose, twisted torso, "
-        "side view, back view, profile view"
+        "side view, back view, profile view, "
+        "blurry face, deformed face, distorted face, ugly face, "
+        "poorly drawn face, messy face, smudged face, "
+        "bad eyes, poorly drawn eyes, asymmetric eyes, "
+        "missing facial features, featureless face, "
+        "low quality face, flat face, generic face"
     )
 
     # v0.3.31: 按风格定制的负面提示词 — 针对不同美术风格排除最影响质量的视觉缺陷

@@ -175,7 +175,12 @@ class ArtPipeAPI(BaseHTTPRequestHandler):
                 return
             
             # v0.3: render_mode
-            render_mode = data.get("render_mode", "procedural")
+            # v0.4: 非像素风默认走AI生成，不画像素序列帧
+            render_mode = data.get("render_mode")
+            resolved_style = data.get("style") or self.engine.parse_prompt(prompt).get("style", "cartoon")
+            if render_mode is None:
+                # 非像素风默认AI，像素风默认procedural
+                render_mode = "ai" if resolved_style != "pixel" else "procedural"
             if render_mode not in ("procedural", "ai", "hybrid"):
                 self._error(400, f"Invalid render_mode: {render_mode}. Use: procedural|ai|hybrid")
                 return
