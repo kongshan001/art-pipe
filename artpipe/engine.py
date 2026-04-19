@@ -1749,9 +1749,38 @@ class CharacterEngine:
                             iris_color = (max(0, _iris_base[0] - 15), max(0, _iris_base[1] - 15), max(0, _iris_base[2] - 15))
                         canvas[y][x] = (*iris_color, 255)
                         # 瞳孔（受惊时不画瞳孔=大虹膜=惊恐效果）
+                        # v0.3.80: 瞳孔大小动画响应(Pupil Size Animation Response)
+                        # 原理：真实瞳孔会根据情绪和注意力自动调节大小——
+                        #       紧张/攻击时瞳孔收缩(虹膜扩张)，恐惧/惊讶时瞳孔放大，
+                        #       放松时瞳孔正常大小。这是自主神经系统的不随意反应。
+                        #       在像素美术中，通过调整瞳孔绘制的行列范围来模拟：
+                        #       - attack/defend: 瞳孔扩大1行(虹膜收缩=紧张专注)
+                        #       - cast: 瞳孔带微紫色调(魔法能量灌注感)
+                        #       - hurt: 不画瞳孔(完全散大=惊恐，已有逻辑)
+                        #       - die: 瞳孔微扩大+失去光泽(濒死散瞳)
+                        #       - idle/walk/run/jump: 正常大小
                         if anim != "hurt":
-                            if abs(_edx) >= head_r//3 + max(1, ps//2) and abs(_edx) <= head_r//2 - max(1, ps//2):
-                                canvas[y][x] = (15, 15, 25, 255)
+                            # 瞳孔X范围基准
+                            _pupil_x_inner = head_r//3 + max(1, ps//2)
+                            _pupil_x_outer = head_r//2 - max(1, ps//2)
+                            # 瞳孔Y范围基准（正常只画中心行dy==0）
+                            _pupil_dy_range = 0  # 默认：仅中心行
+                            _pupil_color = (15, 15, 25)  # 默认瞳孔色：深黑蓝
+                            if anim in ("attack", "defend"):
+                                # 紧张专注：瞳孔扩大到上下各1行(dy range ±1)
+                                # 虹膜收缩→可见瞳孔区域变大→看起来更专注锐利
+                                _pupil_dy_range = 1
+                            elif anim == "cast":
+                                # 施法：瞳孔微亮偏紫(魔法能量在眼中汇聚的暗示)
+                                _pupil_color = (20, 12, 35)
+                            elif anim == "die":
+                                # 濒死散瞳：瞳孔扩大+失去光泽(微灰)
+                                _pupil_dy_range = 1
+                                _pupil_color = (25, 22, 28)
+                            # 绘制瞳孔
+                            if abs(_edx) >= _pupil_x_inner and abs(_edx) <= _pupil_x_outer:
+                                if abs(dy) <= _pupil_dy_range:
+                                    canvas[y][x] = (*_pupil_color, 255)
                     # 主高光（右上方小白点，死亡时不画=失去神采）
                     # v0.3.34: 眨眼时也不画高光（眼睛闭合）
                     if anim != "die" and not _blink_frame:
@@ -4748,6 +4777,36 @@ class CharacterEngine:
                                 if (0 <= _db_hy < H and 0 <= _db_hx < W
                                         and _db_ha > 5 and canvas[_db_hy][_db_hx][3] == 0):
                                     canvas[_db_hy][_db_hx] = (*_db_spark_color, _db_ha)
+
+        # ---- v0.3.80: 奔跑/防御动漫汗滴(Run/Defend Anime Sweat Drop) — 头侧汗滴暗示紧张/疲劳 ----
+        # 原理：动漫/漫画的经典表现手法——角色在紧张、疲劳、尴尬时头部旁边出现一颗
+        #       水滴形汗珠(sweat drop)。这是日本动画约定俗成的情绪符号：
+        #       - 奔跑时：表示体力消耗、疲劳
+        #       - 防御时：表示精神紧张、压力
+        #       在像素美术中，用2-3px的泪滴形（上方1px圆点+下方1px细线）即可暗示，
+        #       配合半透明避免突兀。汗滴位置在头部右上方（不影响角色本身），
+        #       每帧微位移±1px产生"悬挂欲滴"的动画感。
+        # 实现：仅在run和defend动画下触发，在头右上角外侧绘制2px泪滴形汗滴，
+        #       颜色为淡蓝白(200,220,255)，alpha随帧微变产生闪烁感。
+        if anim in ("run", "defend"):
+            _sw_x_base = cx + head_r + 2  # 头部右侧2px
+            _sw_y_base = head_cy - head_r + 1  # 头顶下方1px
+            # 帧间微偏移：模拟汗滴欲滴未滴的晃动感
+            _sw_frame_offset = (frame_idx * 7 + 3) % 5  # 0-4的确定性偏移
+            _sw_dx = (_sw_frame_offset % 3) - 1  # ±1px水平偏移
+            _sw_dy = (_sw_frame_offset % 2)  # 0-1px垂直偏移
+            _sw_x = _sw_x_base + _sw_dx
+            _sw_y = _sw_y_base + _sw_dy
+            # 汗滴alpha：run时更强(180), defend时较弱(140)
+            _sw_alpha = 180 if anim == "run" else 140
+            # 帧间alpha微变：闪烁感
+            _sw_alpha = min(255, _sw_alpha + ((frame_idx * 11) % 30) - 15)
+            _sw_color = (200, 220, 255)  # 淡蓝白
+            # 绘制泪滴形：顶部1px圆点 + 底部1px细线尾巴
+            if 0 <= _sw_y < H and 0 <= _sw_x < W and canvas[_sw_y][_sw_x][3] == 0:
+                canvas[_sw_y][_sw_x] = (*_sw_color, _sw_alpha)  # 圆点部分
+            if 0 <= _sw_y + 1 < H and 0 <= _sw_x < W and canvas[_sw_y + 1][_sw_x][3] == 0:
+                canvas[_sw_y + 1][_sw_x] = (*_sw_color, _sw_alpha - 40)  # 尾巴部分（更透明）
 
         # ---- v0.3.69: 腋窝层间投射阴影(Axilla Inter-Part Cast Shadow) — 手臂在躯干上的定向投影 ----
         # 原理：真实光照中，抬起的物体会在其下方表面投射阴影。手臂与躯干之间
