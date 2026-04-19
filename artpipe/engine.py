@@ -1,5 +1,6 @@
 """
 ArtPipe 角色生成引擎 v0.3
+v0.3.84: 攻击命中画面震动(Attack Hit Screen Shake,attack命中帧整帧±1px位移模拟格斗游戏屏震)+闲置呼吸腮红脉动(Idle Breathing Blush Pulse,idle/walk时腮红强度随呼吸节律脉动补齐形状→光照→血色三层呼吸反馈)
 v0.3.83: 闲置/行走武器尖端闪烁(Idle/Walk Weapon Tip Sparkle,idle/walk时武器尖端每5帧闪一次十字星光模拟RPG经典武器闪烁)+攻击命中火花爆发(Attack Hit Spark Burst,attack冲击帧武器尖端3颗accent色火花120°辐射飞散模拟命中瞬间的金属碰撞火花)
 v0.3.81: 闲置武器微摆(Idle Weapon Sway,呼吸时weapon_angle±0.05弧度钟摆摇摆)+行走/奔跑步态变形(Walk/Run Gait Squash-Stretch,接触帧squash+通过帧stretch的迪士尼12原则变形)
 v0.3.80: 瞳孔大小动画响应(Pupil Size Animation Response,攻击缩小/防御放大/受击放大/施法缩小的瞳孔尺寸随动画状态变化)+奔跑/防御动漫汗滴(Run/Defend Anime Sweat Drop,头侧汗滴暗示紧张/疲劳)
@@ -1036,6 +1037,27 @@ class CharacterEngine:
                             _atk_flash = int(35 * (1 - (_atk_t - 0.5) / 0.5))  # 消散
                         if _atk_flash > 0:
                             frame = self._apply_flash(frame, _atk_flash)
+                # v0.3.84: 攻击命中画面震动（Attack Hit Screen Shake）
+                # 原理：格斗游戏经典技法——攻击命中瞬间整个画面微幅震动1-2px，
+                #       通过画面偏移模拟冲击力的物理传导。Street Fighter的"hit stop+
+                #       screen shake"组合是2D格斗打击感的核心：命中时先冻结帧(hit stop)
+                #       再快速震动(screen shake)，玩家会本能地感受到"打中了"。
+                #       像素级别只需±1px的精确位移即可传达冲击感，
+                #       配合已有的冲击闪光(v0.3.68)和命中火花(v0.3.83)形成完整的
+                #       打击反馈系统：视觉(flash)+粒子(spark)+空间(shake)。
+                # 实现：命中帧(t≈0.43-0.57)使用确定性帧索引计算偏移方向，
+                #       震动强度从峰值±1px快速衰减到0，帧0→1→0→-1→0交替模式。
+                if anim_name == "attack":
+                    if 0.43 <= t <= 0.71:
+                        _shake_t = (t - 0.43) / 0.28  # 0→1
+                        # 震动强度随时间快速衰减（ease-out曲线）
+                        _shake_strength = 1.0 - _shake_t
+                        if _shake_strength > 0.15:
+                            # 确定性震动方向：根据帧索引产生±1px交替偏移
+                            _shake_dx = int(round(math.sin(f * math.pi * 1.5) * _shake_strength))
+                            _shake_dy = int(round(math.cos(f * math.pi * 1.3) * _shake_strength * 0.6))
+                            if _shake_dx != 0 or _shake_dy != 0:
+                                frame = self._shift_frame(frame, _shake_dx, _shake_dy)
                 frames.append(frame)
             animations[anim_name] = frames
         
@@ -1994,11 +2016,27 @@ class CharacterEngine:
                     canvas[_ear_inner_y][_ear_inner_x] = (*skin_dark, 255)
         
         # ---- v0.3.13: 腮红渲染（独立通道，带距离衰减的柔滑圆形腮红） ----
+        # v0.3.84: 闲置呼吸腮红脉动（Idle Breathing Blush Pulse）
+        # 原理：真人安静呼吸时面部血流量随呼吸节律微变——
+        #       吸气时交感神经微激活→面色略淡，呼气时副交感神经占优→面部微泛红。
+        #       动漫/游戏中"活着"的角色常有这种微妙的面色变化。
+        #       加上已有的呼吸缩放(body_scale_x)和亮度脉冲(v0.3.76)，
+        #       腮红脉动补齐了呼吸的第三层反馈：形状(squash)→光照(brightness)→血色(blush)。
+        # 实现：idle时blush强度乘以呼吸因子(0.7~1.3随body_scale_x波动)，
+        #       walk时微弱脉动(0.85~1.1)，其他状态保持固定强度。
         if face_type == "cute" or face_type == "gentle":
             blush_y_offset = head_r // 4
             blush_x_offset = head_r // 3
             blush_r = max(1, head_r // 5)
             blush_center_y = head_cy + blush_y_offset
+            # v0.3.84: 呼吸腮红脉动因子
+            _blush_breath = 1.0  # 默认：无脉动
+            if anim == "idle":
+                # 与呼吸body_scale_x同步：吸气微淡→呼气微红
+                _blush_breath = 0.7 + 0.6 * (1.0 + math.sin(frame_idx * math.pi / 2.0)) / 2.0
+            elif anim == "walk":
+                # 行走时微弱脉动（呼吸节奏与步态同步）
+                _blush_breath = 0.85 + 0.25 * abs(math.sin(frame_idx * math.pi / 3.0))
             for blush_side in [-1, 1]:
                 blush_center_x = cx + blush_side * blush_x_offset
                 for by in range(max(0, blush_center_y - blush_r), min(H, blush_center_y + blush_r + 1)):
@@ -2010,9 +2048,10 @@ class CharacterEngine:
                             if 0 <= by < H and 0 <= bx < W and canvas[by][bx][3] > 0:
                                 # 距离衰减：中心最浓，边缘渐淡
                                 intensity = 1.0 - (dist_sq / (blush_r * blush_r + 1))
-                                blush_r_comp = min(255, int(skin[0] + 50 * intensity))
-                                blush_g_comp = max(0, int(skin[1] - 15 * intensity))
-                                blush_b_comp = max(0, int(skin[2] - 25 * intensity))
+                                # v0.3.84: 腮红强度乘以呼吸脉动因子
+                                blush_r_comp = min(255, int(skin[0] + 50 * intensity * _blush_breath))
+                                blush_g_comp = max(0, int(skin[1] - 15 * intensity * _blush_breath))
+                                blush_b_comp = max(0, int(skin[2] - 25 * intensity * _blush_breath))
                                 old_r, old_g, old_b, old_a = canvas[by][bx]
                                 canvas[by][bx] = (
                                     (old_r + blush_r_comp) // 2,
@@ -6215,6 +6254,23 @@ class CharacterEngine:
                 r, g, b, a = result[y][x]
                 if a > 0:
                     result[y][x] = (r, g, b, alpha)
+        return result
+
+    def _shift_frame(self, frame, dx, dy):
+        """v0.3.84: 帧画面偏移（用于屏震效果）
+        将整个帧画面水平偏移dx像素、垂直偏移dy像素，空白区域填充透明色。
+        偏移量为正时向右/下移动，为负时向左/上移动。
+        用于攻击命中时的画面震动(Street Fighter/Guilty Gear风格screen shake)。
+        """
+        W, H = self.CANVAS_W, self.CANVAS_H
+        result = [[(0, 0, 0, 0) for _ in range(W)] for _ in range(H)]
+        for y in range(H):
+            sy = y - dy  # 源行（从原始帧中取哪一行）
+            if 0 <= sy < H:
+                for x in range(W):
+                    sx = x - dx  # 源列
+                    if 0 <= sx < W:
+                        result[y][x] = frame[sy][sx]
         return result
 
     def _generate_skeleton(self, type_cfg, palette):
