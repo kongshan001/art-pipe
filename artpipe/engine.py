@@ -1,6 +1,6 @@
 """
 ArtPipe 角色生成引擎 v0.3
-v0.3.82: 奔跑运动拖影条纹(Run Motion Blur Streaks,奔跑时3条水平渐隐条纹从身体后方向外延伸模拟运动模糊增强速度感)+施法蓄力能量螺旋(Cast Charge Energy Spiral,蓄力阶段4颗accent色光点沿阿基米德螺旋线向武器尖端汇聚模拟受控能量凝聚)
+v0.3.83: 闲置/行走武器尖端闪烁(Idle/Walk Weapon Tip Sparkle,idle/walk时武器尖端每5帧闪一次十字星光模拟RPG经典武器闪烁)+攻击命中火花爆发(Attack Hit Spark Burst,attack冲击帧武器尖端3颗accent色火花120°辐射飞散模拟命中瞬间的金属碰撞火花)
 v0.3.81: 闲置武器微摆(Idle Weapon Sway,呼吸时weapon_angle±0.05弧度钟摆摇摆)+行走/奔跑步态变形(Walk/Run Gait Squash-Stretch,接触帧squash+通过帧stretch的迪士尼12原则变形)
 v0.3.80: 瞳孔大小动画响应(Pupil Size Animation Response,攻击缩小/防御放大/受击放大/施法缩小的瞳孔尺寸随动画状态变化)+奔跑/防御动漫汗滴(Run/Defend Anime Sweat Drop,头侧汗滴暗示紧张/疲劳)
 v0.3.79: 防御/受击阴影加深(Defend/Hurt Shadow Density Boost,防御时阴影alpha+20扩大10%模拟蹲防低重心+受击时alpha+15扩大8%反射冲击)+行走/奔跑脚步阴影脉冲(Walk/Run Footstep Shadow Pulse,脚着地帧阴影alpha脉冲+12~18+宽度微扩5%与扬尘粒子同步提供完整物理反馈)
@@ -4465,6 +4465,34 @@ class CharacterEngine:
                                 if ga > 8:  # 低于8的太淡，跳过
                                     canvas[gy2][gx2] = (gc[0], gc[1], gc[2], ga)
             
+            # v0.3.83: 闲置/行走武器尖端闪烁 (Idle/Walk Weapon Tip Sparkle)
+            # 原理：在像素美术和2D游戏中，武器尖端的微小闪烁(star sparkle)是经典的
+            #       "polish"细节——RPG角色闲置时武器尖端偶尔闪过一道星光，让武器看起来
+            #       不是静态的装饰品而是锋利的实器。参考：Final Fantasy系列武器图标闪烁、
+            #       Zelda系列剑尖闪光、Undertale武器选择界面的星光点缀。
+            #       技法：在tip_x/tip_y位置附近1px范围内，用确定性伪随机(frame_idx*7+31)%5
+            #       控制闪烁出现/消失，模拟不规则闪光。闪烁颜色为白色偏暖(255,252,240)，
+            #       半透明(alpha=160-200)保持柔和不刺眼，不覆盖已有实体像素。
+            #       仅在idle/walk时出现（run/attack/cast有各自的武器特效不冲突）。
+            if anim in ("idle", "walk") and weapon in ("sword", "staff", "dagger", "bow"):
+                _spk_tick = (frame_idx * 7 + 31) % 5  # 周期性闪烁：5帧周期中1帧闪亮
+                if _spk_tick == 0:  # 每5帧出现1帧闪烁
+                    # 闪烁位置：武器尖端偏上1-2px
+                    _spk_x = tip_x
+                    _spk_y = max(0, tip_y - 2)
+                    # 闪烁亮度随机微变(frame_idx*13+7)%3 产生±1亮度抖动
+                    _spk_bright = 252 + (frame_idx * 13 + 7) % 3  # 252-254
+                    _spk_alpha = 160 + (frame_idx * 11 + 3) % 40  # 160-200
+                    if 0 <= _spk_y < H and 0 <= _spk_x < W:
+                        if canvas[_spk_y][_spk_x][3] == 0:  # 不覆盖实体像素
+                            canvas[_spk_y][_spk_x] = (255, _spk_bright, 240, _spk_alpha)
+                        # 闪烁1px光晕（上下左右各1px半透明点，模拟十字星光）
+                        for _sdx, _sdy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
+                            _shx = _spk_x + _sdx
+                            _shy = _spk_y + _sdy
+                            if 0 <= _shy < H and 0 <= _shx < W and canvas[_shy][_shx][3] == 0:
+                                canvas[_shy][_shx] = (255, 250, 235, _spk_alpha // 3)  # 光晕更淡
+            
             # v0.3.49: 攻击武器挥动轨迹（Weapon Swing Trail）
             # 在攻击动画的挥出阶段(t>0.4)，武器尖端后方绘制半透明弧线残影
             # 原理：格斗游戏的经典技法"拖影"(afterimage)，用2-4个递减透明度的
@@ -4690,6 +4718,41 @@ class CharacterEngine:
                                 if canvas[_al_py][_al_px][3] == 0:
                                     # 暖灰色扬尘（比walk扬尘偏暖，模拟前冲摩擦热量）
                                     canvas[_al_py][_al_px] = (195, 175, 150, _al_alpha)
+
+        # v0.3.83: 攻击命中火花爆发 (Attack Hit Spark Burst)
+        # 原理：攻击动画在冲击帧(t≈0.5, 对应挥出最远点)时，武器尖端爆发一小簇
+        #       accent色火花粒子(3颗)，模拟武器命中目标瞬间的金属碰撞/切割火花。
+        #       与v0.3.49武器挥尾(连续弧线残影)和v0.3.53受击冲击粒子(被动受伤火花)的区别：
+        #       - 挥尾是运动模糊轨迹线(持续)，命中火花是瞬间的离散爆发点(一帧)
+        #       - 受击粒子从被击者身体飞出(被动)，命中火花从攻击者武器尖端飞出(主动)
+        #       参考：Street Fighter的hit spark特效、Guilty Gear的命中闪光、
+        #       Mega Man Zero的剑击火花。2-3帧生命周期，首帧最亮。
+        if anim == "attack":
+            _ah_nframes = 6
+            _ah_t = frame_idx / max(1, _ah_nframes - 1)  # 0→1
+            # 冲击帧判定：t≈0.5时挥出最远，命中火花在这一帧和下一帧出现
+            if 0.45 <= _ah_t <= 0.65:
+                # 武器尖端位置（使用weapon_base_x/y + 当前姿势偏移）
+                _ah_cx = tip_x if 'tip_x' in dir() else cx + body_dx
+                _ah_cy = tip_y if 'tip_y' in dir() else body_top + body_h // 3
+                # 火花生命周期：冲击帧alpha最高，后续帧渐隐
+                _ah_life = 1.0 - abs(_ah_t - 0.55) / 0.15  # t=0.55时为1.0
+                _ah_life = max(0.0, min(1.0, _ah_life))
+                _ah_count = 3  # 3颗火花
+                for _ahi in range(_ah_count):
+                    # 方向：从尖端向外辐射，3颗均匀分布120°间隔
+                    _ah_angle = math.radians(_ahi * 120 + 45 + frame_idx * 15)
+                    _ah_dist = int(2 + _ah_life * 3)  # 2-5px飞散距离
+                    _ah_px = int(_ah_cx + math.cos(_ah_angle) * _ah_dist)
+                    _ah_py = int(_ah_cy + math.sin(_ah_angle) * _ah_dist)
+                    # 火花颜色：accent色亮化+暖色偏移（模拟能量/灼热）
+                    _ah_r = min(255, accent[0] + 100)
+                    _ah_g = min(255, accent[1] + 80)
+                    _ah_b = min(255, accent[2] + 40)
+                    _ah_alpha = int(180 * _ah_life * (1.0 - _ahi * 0.15))
+                    if 0 <= _ah_py < H and 0 <= _ah_px < W and _ah_alpha > 15:
+                        if canvas[_ah_py][_ah_px][3] == 0:
+                            canvas[_ah_py][_ah_px] = (_ah_r, _ah_g, _ah_b, _ah_alpha)
 
         # v0.3.53: 受击冲击粒子（Hurt Impact Sparks）— 受击时飞溅的小火花/碎片粒子
         # 原理：格斗游戏和动作游戏的经典反馈特效，角色被击中时从受击点飞出
