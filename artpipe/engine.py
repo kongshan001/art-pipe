@@ -1037,6 +1037,7 @@ class CharacterEngine:
             "left_arm_dx": 0, "left_arm_dy": 0,
             "right_arm_dx": 0, "right_arm_dy": 0,
             "body_dy": 0, "head_dy": 0,
+            "head_dx": 0,  # v0.3.72: 头部水平偏移（walk/run身体前倾）
             "weapon_angle": 0,
             "body_scale_x": 1.0,  # v0.3.8: 胸腔横向缩放（呼吸）
             "body_scale_y": 1.0,  # v0.3.25: 纵向缩放（squash & stretch）
@@ -1090,6 +1091,16 @@ class CharacterEngine:
             # 左右臂各0.3rad相位差避免完全对称（延续v0.3.61 idle手臂异步思路）
             pose["left_arm_dy"] = round(math.cos(phase + math.pi + 0.3) * 1.5)
             pose["right_arm_dy"] = round(math.cos(phase - 0.3) * 1.5)
+
+            # v0.3.72: 行走身体前倾（Walk Body Lean）— 头部相对躯干额外前倾偏移
+            # 原理：真实行走时身体重心前移，躯干自然前倾约5-10°。在像素美术中无法真正旋转，
+            #       但可以通过头部水平偏移(head_dx)模拟前倾效果——行走时头比身体多前倾1px。
+            #       生物力学依据：行走时从脚跟到头部的质量链形成倒摆模型(inverted pendulum)，
+            #       头部作为最高质量点会因惯性领先于躯干前移。
+            #       相位与迈步同频(sin(phase))，前迈脚时身体前倾最大。
+            #       幅度仅1px（int后±0.5→±1），保持微妙感，避免像素角色"歪头"。
+            #       与head_dy叠加形成斜向运动弧线，配合body_dx已有横向偏移创造3D运动感。
+            pose["head_dx"] = int(math.sin(phase) * 1.0)
             
         elif anim == "run":
             # 更大幅度的腿交替 + 身体前倾
@@ -1111,6 +1122,13 @@ class CharacterEngine:
             # v0.3.62: 跑步手臂垂直摆动 +0.2rad相位差（左右臂异步）
             # 保留原arm_dy逻辑，仅在左臂相位偏移+0.2rad产生微妙不对称
             pose["left_arm_dy"] = -int(abs(math.sin(phase + math.pi + 0.2)) * 1)
+            # v0.3.72: 跑步身体前倾（Run Body Lean）— 头部额外前倾，幅度大于walk
+            # 跑步时前倾角度约15-20°，是行走的2-3倍。head_dx幅度2px（int后±1~2），
+            # 与walk的1px形成递进关系，保持动画层级的力度差异。
+            # 相位使用sin(phase)，与迈步同步：前迈脚时头最前倾。
+            # 效果：跑步时角色看起来冲向前方，而非原地踏步。
+            # 结合body_dy的垂直弹跳，形成45°斜向运动轨迹——增强速度感。
+            pose["head_dx"] = int(math.sin(phase) * 2.0)
             pose["right_arm_dy"] = -int(abs(math.sin(phase)) * 1)
             
         elif anim == "jump":
@@ -1515,6 +1533,13 @@ class CharacterEngine:
         if body_dx != 0:
             cx = torso_cx
         
+        # v0.3.72: 应用 head_dx — 头部额外水平偏移模拟身体前倾
+        # head_dx 独立于 body_dx（已通过torso_cx应用），仅影响头部和头部配件
+        _head_dx = pose.get("head_dx", 0)
+        if _head_dx != 0:
+            # 临时偏移cx供头部渲染使用，渲染后恢复
+            cx = cx + _head_dx
+        
         # ---- 绘制头部 ----
         # v0.3.21: 头部渐变着色 — 左上亮、右下暗，模拟球体光照
         # 原理：头部近似球体，根据每个像素相对球心的角度计算明暗
@@ -1774,6 +1799,69 @@ class CharacterEngine:
                             # 普通小嘴
                             if dy == mouth_y and abs(dx) <= head_r//6:
                                 canvas[y][x] = (180, 80, 80, 255)
+        
+        # ---- v0.3.71: 耳朵渲染（Ear Rendering）— 头部两侧微小耳朵增加角色完成度 ----
+        # 原理：真实人头两侧有可见的耳朵结构，像素角色省略耳朵时头部看起来像光滑的球体，
+        #       缺少解剖结构的完整性。在像素美术中，即使只有2-3px的耳朵也能大幅提升
+        #       角色的可读性和完成度——MortMort/slynyrd等像素美术教育者都将耳朵列为
+        #       "头部三要素"（头形+面部+耳朵）之一。
+        #       怪物(monster)使用尖耳(pointed)，其他角色使用圆耳(rounded)。
+        #       耳朵位置在头部球体水平中心线的两侧边缘，与眼睛同高（真实解剖位置）。
+        #       耳朵颜色使用skin色（耳廓可见部分）+skin_dark色（耳内阴影），
+        #       受光侧(左)耳朵使用skin_light增加光照一致性。
+        # 实现：在头部两侧各画2-3px的半圆/三角形耳朵区域：
+        #       圆耳：2列×3行的半圆形，左侧受光用skin_light，右侧背光用skin
+        #       尖耳(怪物)：3列×4行的三角形，向上外侧延伸，用skin色
+        #       耳内阴影：耳廓中心1px用skin_dark，模拟耳孔/耳道暗影
+        _ear_type = "pointed" if type_cfg.get("is_monster") else "rounded"
+        # 耳朵Y中心：与眼睛同高（头部垂直中心附近）
+        _ear_cy = head_cy
+        # 耳朵X位置：头部球体边缘 ±1px
+        _ear_left_x = cx - head_r
+        _ear_right_x = cx + head_r
+        if _ear_type == "rounded":
+            # 圆耳：2列×3行的半圆形，紧贴头部球体两侧
+            for _eside in (-1, 1):  # -1=左, 1=右
+                _ear_base_x = cx + _eside * head_r  # 头部边缘
+                # 左侧受光(亮)，右侧背光(暗)
+                _ear_color = skin_light if _eside < 0 else skin
+                for _ey_off in range(-1, 2):  # 3行：上中下
+                    _ey = _ear_cy + _ey_off
+                    for _ex_off in range(2):  # 2列向外延伸
+                        _ex = _ear_base_x + _eside * _ex_off
+                        if 0 <= _ey < H and 0 <= _ex < W:
+                            # 椭圆判定：行方向的衰减，顶部和底部行只画1px
+                            if _ey_off == 0 and _ex_off <= 1:
+                                canvas[_ey][_ex] = (*_ear_color, 255)
+                            elif abs(_ey_off) == 1 and _ex_off == 0:
+                                canvas[_ey][_ex] = (*_ear_color, 255)
+                # 耳内阴影：中心1px用skin_dark
+                _ear_inner_x = _ear_base_x + (_eside * 0)  # 就在头部边缘
+                _ear_inner_y = _ear_cy
+                if 0 <= _ear_inner_y < H and 0 <= _ear_inner_x < W:
+                    canvas[_ear_inner_y][_ear_inner_x] = (*skin_dark, 255)
+        else:
+            # 尖耳(怪物)：3列×4行的三角形，向上外侧延伸
+            for _eside in (-1, 1):
+                _ear_base_x = cx + _eside * (head_r - 1)
+                _ear_color = skin
+                for _ey_off in range(-2, 2):  # 4行
+                    # 三角形：越往上越窄，越往下越宽
+                    _tri_w = max(1, 2 - abs(_ey_off - 1))  # 顶部1px宽，底部2px宽
+                    _ey = _ear_cy + _ey_off
+                    for _ex_off in range(_tri_w):
+                        _ex = _ear_base_x + _eside * _ex_off
+                        if 0 <= _ey < H and 0 <= _ex < W:
+                            # 尖端高光
+                            if _ey_off == -2:
+                                canvas[_ey][_ex] = (*skin_light, 255)
+                            else:
+                                canvas[_ey][_ex] = (*_ear_color, 255)
+                # 耳内阴影
+                _ear_inner_y = _ear_cy - 1
+                _ear_inner_x = _ear_base_x
+                if 0 <= _ear_inner_y < H and 0 <= _ear_inner_x < W:
+                    canvas[_ear_inner_y][_ear_inner_x] = (*skin_dark, 255)
         
         # ---- v0.3.13: 腮红渲染（独立通道，带距离衰减的柔滑圆形腮红） ----
         if face_type == "cute" or face_type == "gentle":
@@ -2438,6 +2526,10 @@ class CharacterEngine:
                         max(0, int(_cs_px[2]) - _cs_dark + 5),      # B少减5（偏暖）
                         _cs_px[3]
                     )
+        
+        # v0.3.72: 恢复 head_dx 偏移 — 身体部分使用 torso_cx（不含head_dx）
+        if _head_dx != 0:
+            cx = cx - _head_dx
         
         # ---- 绘制身体（v0.3.11: 颜色分层+服装纹理图案渲染） ----
         # 纹理由 _render_all_frames 在帧循环前一次性选定
