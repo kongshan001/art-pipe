@@ -1,5 +1,6 @@
 """
 ArtPipe 角色生成引擎 v0.3
+v0.3.79: 防御/受击阴影加深(Defend/Hurt Shadow Density Boost,防御时阴影alpha+20扩大10%模拟蹲防低重心+受击时alpha+15扩大8%反射冲击)+行走/奔跑脚步阴影脉冲(Walk/Run Footstep Shadow Pulse,脚着地帧阴影alpha脉冲+12~18+宽度微扩5%与扬尘粒子同步提供完整物理反馈)
 v0.3.78: 防御格挡冲击闪光(Defend Block Impact Flash,格挡瞬间t≈0.25从武器/盾牌位置爆发accent色扩展光环+4颗火花粒子提供防御冲击反馈)+施法释放能量爆发(Cast Release Energy Burst,施法释放时刻t≈0.43从武器尖端径向爆发accent色能量冲击波强化魔法释放感)
 v0.3.76: 呼吸亮度脉冲(Breath Luminance Pulse,吸气胸腔扩张时身体微亮+呼气收缩时微暗,与body_scale_x同步让呼吸不仅影响形状还影响光照)+手部镜面高光点(Hand Specular Highlight,手掌左上1px亮白点模拟球形表面镜面反射,让手从flat色块变为有3D体积感的球形)
 v0.3.75: 施法升腾魔法粒子(Cast Rising Aura Particles,蓄力阶段身体两侧accent色光粒向上飘升形成能量柱效果)+地面阴影水平跟随(Shadow Body-DX Follow,阴影中心跟随body_dx偏移让水平位移有物理基础)
@@ -5761,6 +5762,37 @@ class CharacterEngine:
             shadow_rx = int(shadow_rx * _stretch)  # 越高越宽（透视扩散）
             shadow_ry = max(1, int(shadow_ry / _stretch))  # 越高越扁（透视压缩）
             shadow_alpha_base = max(12, 70 - _jump_h * 4)  # 越高越淡（距离衰减）
+        # v0.3.79: 防御/受击阴影加深（Defend/Hurt Shadow Density Boost）
+        # 原理：防御和受击姿态下角色重心降低（半蹲/弯腰），身体更贴近地面，
+        #       物理上意味着阴影应该更浓（遮挡更紧密）且略微扩大（身体展开面积增加）。
+        #       这在格斗游戏（街霸/拳皇）和动作游戏（黑暗之魂）中是标准做法——
+        #       蹲防状态的角色阴影明显比站立时深。
+        #       视觉效果：阴影加深让防御/受击的"沉重感"更强烈，传达"被压迫"的状态。
+        # 实现：defend时shadow_alpha +20（约30%加深），hurt时+15（受击冲击反射）。
+        #       阴影宽度微扩10%（身体展开），模拟重心下压的面积增加。
+        if anim == "defend":
+            shadow_alpha_base = min(110, shadow_alpha_base + 20)
+            shadow_rx = int(shadow_rx * 1.10)
+        elif anim == "hurt":
+            shadow_alpha_base = min(100, shadow_alpha_base + 15)
+            shadow_rx = int(shadow_rx * 1.08)
+        # v0.3.79: 行走/奔跑脚步阴影脉冲（Walk/Run Footstep Shadow Pulse）
+        # 原理：行走/奔跑时每一步落地，身体重量集中在着地脚上，
+        #       导致地面阴影在该帧瞬间加深（重心下压）并微扩（冲击扩散）。
+        #       真实行走中，脚跟着地→全掌着地的过程中，地面压力从0快速增到体重峰值，
+        #       阴影密度也随之脉冲变化。与v0.3.49的扬尘粒子同步但效果独立——
+        #       扬尘是粒子特效（"散开"），阴影脉冲是密度变化（"踩实"）。
+        #       两者叠加让每一步有完整的物理反馈：视觉(扬尘)+空间(阴影脉动)。
+        # 实现：在脚着地帧（与扬尘相同的正弦相位检测），shadow_alpha脉冲+12~18，
+        #       shadow_rx微扩+5%，形成每步一次的阴影"呼吸"节奏。
+        if anim in ("walk", "run"):
+            _pulse_t = frame_idx / max(1, 5)  # walk/run都是6帧
+            _pulse_phase = _pulse_t * math.pi * 2
+            _pulse_impact = abs(math.sin(_pulse_phase))
+            if _pulse_impact > 0.3:  # 脚着地帧（与扬尘同步）
+                _pulse_strength = 18 if anim == "run" else 12
+                shadow_alpha_base = min(110, shadow_alpha_base + int(_pulse_impact * _pulse_strength))
+                shadow_rx = int(shadow_rx * (1.0 + 0.05 * _pulse_impact))
         
         # v0.3.33: 有色地面阴影（Tinted Drop Shadow）— 基于角色配色着色的投影
         # 原理：真实光照中，阴影不是纯黑色的——它会吸收物体表面的颜色并偏移。
