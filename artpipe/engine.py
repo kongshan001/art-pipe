@@ -1,5 +1,6 @@
 """
 ArtPipe 角色生成引擎 v0.3
+v0.3.73: 瞳孔注视漂移(Pupil Gaze Drift,idle/walk时瞳孔/高光±1px正弦漂移模拟微saccade让角色活着感)+跳跃落地冲击扬尘(Jump Landing Impact Dust,jump落地帧8颗冲击扬尘粒子±6px扩散比walk扬尘更剧烈提供着陆反馈)
 v0.3.65: 受击水平击退(Hurt Knockback,body_dx 3px ease-out快速击退)+死亡侧倾(Die Body Tilt,body_dx 4px ease-in加速侧倾模拟重心失衡倒地)
 v0.3.57: 胸甲V形线(Chest Plate V-Line,肩到胸口的V形暗线暗示胸甲/胸肌结构)+下颌轮廓线(Jawline Contour,头部底部弧形暗线定义下颌形状)
 支持三种渲染模式: procedural(程序化) / ai(AI生成) / hybrid(混合)
@@ -1640,6 +1641,16 @@ class CharacterEngine:
                         _blink_frame = True
                     elif anim == "cast" and frame_idx == 5:
                         _blink_frame = True
+                    # v0.3.73: 瞳孔注视漂移(Pupil Gaze Drift) — idle/walk时瞳孔缓慢偏移±1px
+                    # 原理：真人眼球每3-5秒会做微saccade(扫视)，像素角色中用慢正弦模拟
+                    #       让角色看起来"活着"和"有意识"，而不是僵硬盯着前方
+                    #       仅idle和walk激活，战斗/受伤/施法时注意力集中不做漂移
+                    _gaze_dx = 0
+                    if anim == "idle":
+                        _gaze_dx = int(round(math.sin(frame_idx * math.pi / 2.0)))
+                    elif anim == "walk":
+                        _gaze_dx = int(round(math.sin(frame_idx * math.pi / 3.0) * 0.7))
+                    _edx = dx - _gaze_dx  # 眼部计算用有效dx（注视偏移后的相对位置）
                     if _blink_frame:
                         # 眨眼：眼睛闭合为一条线（眼睑），用肤色暗色画
                         eye_zone_y = dy == 0  # 只在中心线画眼睑
@@ -1651,7 +1662,7 @@ class CharacterEngine:
                             eye_zone_y = abs(dy) <= max(0, ps - 1)  # 专注：眯眼
                         elif anim == "die":
                             eye_zone_y = dy <= 0 and abs(dy) <= ps  # 虚弱：只画上半
-                    eye_zone_x = abs(dx) >= head_r//3 and abs(dx) <= head_r//2
+                    eye_zone_x = abs(_edx) >= head_r//3 and abs(_edx) <= head_r//2
                     if _blink_frame and eye_zone_y and eye_zone_x:
                         # 眨眼时画眼睑线（肤色暗色窄线，模拟闭合的眼皮）
                         lid_color = (max(0, skin[0]-35), max(0, skin[1]-25), max(0, skin[2]-20), 255)
@@ -1667,7 +1678,7 @@ class CharacterEngine:
                         _iris_inner = head_r // 3
                         _iris_outer = head_r // 2
                         _iris_range = max(1, _iris_outer - _iris_inner)
-                        _iris_t = (abs(dx) - _iris_inner) / _iris_range  # 0=内缘, 1=外缘
+                        _iris_t = (abs(_edx) - _iris_inner) / _iris_range  # 0=内缘, 1=外缘
                         _iris_base = accent
                         if _iris_t < 0.35:
                             # 内缘区（靠近鼻子侧）—— 中暗，模拟瞳孔边缘虹膜收缩
@@ -1681,14 +1692,14 @@ class CharacterEngine:
                         canvas[y][x] = (*iris_color, 255)
                         # 瞳孔（受惊时不画瞳孔=大虹膜=惊恐效果）
                         if anim != "hurt":
-                            if abs(dx) >= head_r//3 + max(1, ps//2) and abs(dx) <= head_r//2 - max(1, ps//2):
+                            if abs(_edx) >= head_r//3 + max(1, ps//2) and abs(_edx) <= head_r//2 - max(1, ps//2):
                                 canvas[y][x] = (15, 15, 25, 255)
                     # 主高光（右上方小白点，死亡时不画=失去神采）
                     # v0.3.34: 眨眼时也不画高光（眼睛闭合）
                     if anim != "die" and not _blink_frame:
-                        if dy == -ps//2 and dx == head_r//3 + max(1, ps//2):
+                        if dy == -ps//2 and _edx == head_r//3 + max(1, ps//2):
                             canvas[y][x] = (255, 255, 255, 255)
-                        if dy == -ps//2 and dx == -(head_r//3 + max(1, ps//2)):
+                        if dy == -ps//2 and _edx == -(head_r//3 + max(1, ps//2)):
                             canvas[y][x] = (255, 255, 255, 255)
                     # v0.3.19: 副高光 — 动漫风第二高光点（主高光内侧下方，增加水润感）
                     # 只在正常/惊讶/施法时显示，眯眼和半闭时不画
@@ -1696,7 +1707,7 @@ class CharacterEngine:
                     if anim not in ("attack", "defend", "die") and not _blink_frame:
                         sub_y = max(0, -ps//2 + 1)
                         sub_dx = head_r//3 + max(1, ps//2) - 1
-                        if dy == sub_y and abs(dx) == sub_dx and canvas[y][x][3] > 0:
+                        if dy == sub_y and abs(_edx) == sub_dx and canvas[y][x][3] > 0:
                             canvas[y][x] = (210, 225, 255, 255)  # 淡蓝白副高光
                     
                     # 鼻子（v0.3.7: 微小像素鼻子，增加面部立体感）
@@ -4378,6 +4389,31 @@ class CharacterEngine:
                             if canvas[_dust_py][_dust_px][3] == 0:  # 不覆盖已有像素
                                 # 灰尘色：暖灰色（偏土黄）
                                 canvas[_dust_py][_dust_px] = (180, 165, 140, _dust_alpha)
+        
+        # v0.3.73: 跳跃落地冲击扬尘（Jump Landing Impact Dust）
+        # 原理：角色从空中落地时，重力势能转化为地面冲击——比行走扬尘更剧烈。
+        #       经典2D平台游戏(如Hollow Knight、Ori)中，落地扬尘是关键的"着陆反馈"，
+        #       告诉玩家"你落地了"——这是游戏手感的隐形基础。
+        #       与v0.3.49 walk/run扬尘的区别：粒子更多(8颗 vs 2-4颗)、
+        #       扩散更广(±6 vs ±4)、alpha更高(100 vs 45-70)、颜色偏亮(模拟冲击扬起)
+        #       只在jump动画最后一帧(落地帧)触发一次性爆发
+        if anim == "jump" and frame_idx == 5:
+            _jdust_ground_y = leg_top + leg_h + shoe_h
+            if _jdust_ground_y < H:
+                _jdust_count = 8  # 比walk(2)和run(4)更多，模拟冲击波
+                _jdust_alpha_base = 100  # 比walk(45)更不透明，更明显
+                _jdust_seed = 42  # 固定种子，落地帧确定性
+                for _jdi in range(_jdust_count):
+                    # X偏移：±6范围，比walk(±4)更宽，模拟落地冲击波扩散
+                    _jdust_px = cx + ((_jdust_seed + _jdi * 13) % 13) - 6
+                    # Y偏移：地面向上0-2像素，模拟扬尘高度
+                    _jdust_py = _jdust_ground_y - ((_jdust_seed + _jdi * 5) % 3)
+                    # Alpha递减：每颗粒子逐渐变淡，模拟扬尘消散
+                    _jdust_alpha = int(_jdust_alpha_base * (1 - _jdi * 0.1))
+                    if 0 <= _jdust_py < H and 0 <= _jdust_px < W and _jdust_alpha > 10:
+                        if canvas[_jdust_py][_jdust_px][3] == 0:
+                            # 落地扬尘色：比walk扬尘略亮（偏白灰），模拟高速冲击扬起的细尘
+                            canvas[_jdust_py][_jdust_px] = (200, 190, 170, _jdust_alpha)
         
         # v0.3.53: 受击冲击粒子（Hurt Impact Sparks）— 受击时飞溅的小火花/碎片粒子
         # 原理：格斗游戏和动作游戏的经典反馈特效，角色被击中时从受击点飞出
